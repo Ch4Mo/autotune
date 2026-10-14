@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: "3.47.7"
+
+jobs:
+  engine:
+    name: Native engine tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build engine, tests and CLI
+        run: |
+          cmake -S packages/voicefx/src -B build -DVOICEFX_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+      - name: Run engine tests
+        run: ./build/voicefx_tests "$RUNNER_TEMP"
+
+  android:
+    name: Flutter tests + Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Plugin FFI tests (against a desktop build of the engine)
+        run: |
+          cmake -S packages/voicefx/src -B build-host -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-host -j --target voicefx
+          cd packages/voicefx
+          flutter pub get
+          VOICEFX_LIB="$GITHUB_WORKSPACE/build-host/libvoicefx.so" flutter test
+      - name: Analyze and test the app
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+      - name: Build APK
+        working-directory: app
+        run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voxtune-android-apk
+          path: app/build/app/outputs/flutter-apk/app-release.apk
+
+  ios:
+    name: iOS build (no code signing)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Build iOS app
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter build ios --release --no-codesign
