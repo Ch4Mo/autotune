@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:voicefx/voicefx.dart';
@@ -16,6 +17,8 @@ class Take {
     required this.duration,
     this.preset = VoicePreset.pop,
     this.params,
+    this.backingName,
+    this.recordedOffsetMs = 0,
   });
 
   final String id;
@@ -26,7 +29,43 @@ class Take {
   VoicePreset preset;
   VoiceFxParams? params;
 
+  /// Original file name of the instrumental, null when there is none.
+  String? backingName;
+
+  /// Voice/instrumental offset measured while recording (ms).
+  double recordedOffsetMs;
+
   File get audioFile => File('${dir.path}/take.wav');
+
+  /// The instrumental copied into the take folder (backing.mp3 / backing.wav).
+  File? get backingFile {
+    if (backingName == null) return null;
+    for (final ext in backingExtensions) {
+      final f = File('${dir.path}/backing.$ext');
+      if (f.existsSync()) return f;
+    }
+    return null;
+  }
+
+  static const backingExtensions = ['mp3', 'wav'];
+
+  /// Copies [source] into the take folder as its instrumental.
+  Future<void> attachBacking(File source, String name) async {
+    await detachBacking();
+    final ext = name.toLowerCase().endsWith('.wav') ? 'wav' : 'mp3';
+    await source.copy('${dir.path}/backing.$ext');
+    backingName = name;
+    await save();
+  }
+
+  Future<void> detachBacking() async {
+    for (final ext in backingExtensions) {
+      final f = File('${dir.path}/backing.$ext');
+      if (await f.exists()) await f.delete();
+    }
+    backingName = null;
+    await save();
+  }
   File get _metaFile => File('${dir.path}/meta.json');
 
   Map<String, Object?> toJson() => {
@@ -35,6 +74,8 @@ class Take {
         'duration': duration,
         'preset': preset.name,
         if (params != null) 'params': params!.toJson(),
+        if (backingName != null) 'backingName': backingName,
+        'recordedOffsetMs': recordedOffsetMs,
       };
 
   static Take? load(Directory dir) {
@@ -48,6 +89,8 @@ class Take {
         duration: (j['duration'] as num?)?.toDouble() ?? 0,
         preset: VoicePreset.values.firstWhere((p) => p.name == j['preset'], orElse: () => VoicePreset.pop),
         params: j['params'] is Map ? VoiceFxParams.fromJson((j['params'] as Map).cast<String, dynamic>()) : null,
+        backingName: j['backingName'] as String?,
+        recordedOffsetMs: (j['recordedOffsetMs'] as num?)?.toDouble() ?? 0,
       );
     } catch (e) {
       debugPrint('Skipping unreadable take in ${dir.path}: $e');
@@ -136,4 +179,26 @@ class TakeRepository extends ChangeNotifier {
     }
     return 'Prise ${max + 1}';
   }
+}
+
+/// Lets the user choose an instrumental and copies it to a local file
+/// (pickers may return content URIs that are not plain paths).
+/// Returns null when the user cancels.
+Future<({File file, String name})?> pickInstrumental() async {
+  final picked = await FilePicker.pickFile(
+    type: FileType.custom,
+    allowedExtensions: Take.backingExtensions,
+    dialogTitle: 'Choisir une instrumentale',
+  );
+  if (picked == null) return null;
+  final ext = picked.extension?.toLowerCase();
+  if (ext == null || !Take.backingExtensions.contains(ext)) {
+    throw const FormatException('Format non pris en charge : choisissez un fichier MP3 ou WAV.');
+  }
+  final tmp = await getTemporaryDirectory();
+  final dest = File('${tmp.path}/picked_${DateTime.now().millisecondsSinceEpoch}.$ext');
+  final sink = dest.openWrite();
+  await sink.addStream(picked.readAsByteStream());
+  await sink.close();
+  return (file: dest, name: picked.name);
 }

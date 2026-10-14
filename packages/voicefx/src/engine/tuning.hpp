@@ -34,6 +34,10 @@ struct KeyEstimate {
 // Krumhansl-Schmuckler key estimation on the sung melody.
 KeyEstimate detectKey(const PitchTrack& track);
 
+// Key estimation on polyphonic music (an instrumental): chromagram of the
+// spectral peaks, correlated with the same key profiles.
+KeyEstimate detectKeyFromAudio(const std::vector<float>& mono, double sampleRate);
+
 struct CorrectionParams {
   Key key;
   float amount = 1.0f;        // 0 = no correction, 1 = full

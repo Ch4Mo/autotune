@@ -54,7 +54,18 @@ class StudioController extends ChangeNotifier {
   bool _disposed = false;
   late final Directory _cache;
 
-  KeyDetection? get detectedKey => _session?.detectedKey;
+  String loadingMessage = 'Analyse de votre voix…';
+  bool busyBacking = false;
+
+  bool get hasBacking => (_session?.backingDuration ?? 0) > 0;
+
+  /// True when the key comes from the instrumental (same rule as the engine).
+  bool get keyFromBacking {
+    final b = _session?.backingKey;
+    return b != null && b.key.scale != MusicalScale.chromatic && b.confidence >= 0.2;
+  }
+
+  KeyDetection? get detectedKey => keyFromBacking ? _session!.backingKey : _session?.detectedKey;
 
   /// Key actually used for correction (manual choice or detection).
   MusicalKey get effectiveKey {
@@ -76,8 +87,14 @@ class StudioController extends ChangeNotifier {
       await _cache.create(recursive: true);
 
       _session = await VoiceFxSession.open(take.audioFile.path);
+      final backing = take.backingFile;
+      if (backing != null) {
+        loadingMessage = "Analyse de l'instrumentale…";
+        _notify();
+        await _session!.setBacking(backing.path);
+      }
       preset = take.preset;
-      params = take.params ?? VoiceFxParams.preset(preset);
+      params = take.params ?? VoiceFxParams.preset(preset).copyWith(backingOffsetMs: take.recordedOffsetMs);
       originalWaveform = await _session!.waveform(400, rendered: false);
 
       player.playerStateStream.listen((s) {
@@ -100,8 +117,14 @@ class StudioController extends ChangeNotifier {
 
   void selectPreset(VoicePreset p) {
     preset = p;
-    // Keep the user's key choice when switching style.
-    params = VoiceFxParams.preset(p).copyWith(keyRoot: params.keyRoot, scale: params.scale);
+    // Keep the user's key and instrumental settings when switching style.
+    params = VoiceFxParams.preset(p).copyWith(
+      keyRoot: params.keyRoot,
+      scale: params.scale,
+      useBacking: params.useBacking,
+      vocalBalance: params.vocalBalance,
+      backingOffsetMs: params.backingOffsetMs,
+    );
     _notify();
     _schedule(immediate: true);
   }
@@ -112,6 +135,40 @@ class StudioController extends ChangeNotifier {
     params = p;
     _notify();
     _schedule();
+  }
+
+  /// Adds or replaces the instrumental. Returns an error message, or null.
+  Future<String?> chooseBacking() async {
+    try {
+      final picked = await pickInstrumental();
+      if (picked == null) return null;
+      busyBacking = true;
+      _notify();
+      await _session!.setBacking(picked.file.path);
+      await take.attachBacking(picked.file, picked.name);
+      // Added after recording: there is no measured offset.
+      params = params.copyWith(useBacking: true, backingOffsetMs: 0);
+      _originalPath = null;
+      _schedule(immediate: true);
+      return null;
+    } on FormatException catch (e) {
+      return e.message;
+    } on VoiceFxException {
+      return "Impossible de lire ce fichier. Choisissez un MP3 ou un WAV.";
+    } catch (e) {
+      return "Impossible d'ajouter l'instrumentale : $e";
+    } finally {
+      busyBacking = false;
+      _notify();
+    }
+  }
+
+  Future<void> removeBacking() async {
+    await _session!.clearBacking();
+    await take.detachBacking();
+    _originalPath = null;
+    _notify();
+    _schedule(immediate: true);
   }
 
   void setKey({required int root, required int scale}) => update(params.copyWith(keyRoot: root, scale: scale));
@@ -163,9 +220,12 @@ class StudioController extends ChangeNotifier {
         _flip ^= 1;
         final path = '${_cache.path}/effect_$_flip.wav';
         await s.exportWav(path, bits: 16);
-        if (_originalPath == null) {
-          _originalPath = '${_cache.path}/original.wav';
-          await s.exportOriginal(_originalPath!);
+        // With an instrumental the "before" file depends on balance and sync.
+        if (_originalPath == null || hasBacking) {
+          final orig = '${_cache.path}/original_$_flip.wav';
+          await s.exportOriginal(orig);
+          _originalPath = orig;
+          if (listenOriginal) await _load(orig);
         }
         waveform = await s.waveform(400);
         curves = await s.pitchCurves(400);

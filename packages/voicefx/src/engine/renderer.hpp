@@ -1,6 +1,7 @@
 // Full vocal render: clean-up -> pitch correction -> voices -> channel strip -> space -> mastering.
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include "../voicefx.h"
@@ -23,10 +24,25 @@ struct Session {
   Stereo output;
   std::vector<float> correctedHz;  // per pitch frame, for display
   double outputLufs = -14.0;
+  vfx_params lastParams{};
+
+  // Instrumental to sing over (resampled to sampleRate).
+  bool hasBacking = false;
+  Stereo backing;
+  double backingLufs = -14.0;
+  KeyEstimate backingKey;
 
   void analyze();
+  void setBacking(const std::string& path);
+  void clearBacking();
   void render(const vfx_params& p);
   Stereo loudnessMatchedOriginal() const;
+
+ private:
+  bool mixesBacking(const vfx_params& p) const { return hasBacking && p.use_backing != 0; }
+  // Places the voice on the instrumental's timeline with a balanced level.
+  // Returns the mix and the loudness it should be mastered to.
+  Stereo mixWithBacking(const Stereo& voice, const vfx_params& p, double& targetLufs, size_t& contentLen) const;
 };
 
 vfx_params presetParams(int preset);

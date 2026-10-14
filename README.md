@@ -12,14 +12,19 @@ Le moteur audio, lui, est fait pour un rendu de qualité professionnelle.
 ## Utilisation
 
 1. **Enregistrer** : un gros bouton, un chrono et un vumètre (il prévient si le son sature).
+   On peut **chanter sur une instrumentale** (MP3 ou WAV) : elle est jouée au casque pendant la prise,
+   et l'enregistrement s'arrête à la fin du morceau.
 2. **Choisir un style** : Naturel, Pop, Hard Tune, Chœur, Studio, Robot, Grave, Aiguë.
 3. **Ajuster** (optionnel) : *Correction*, *Effet* (naturel ↔ robotique), *Ambiance*.
    La **tonalité** est détectée toute seule ; on peut aussi la choisir à la main.
    « Plus de réglages » donne accès à la hauteur, au timbre, aux harmonies, au doublage,
    à l'écho, à la brillance, à la chaleur, à la compression et à la réduction de bruit.
-4. **Comparer** avant/après au même volume, et regarder la courbe « Justesse » (notes chantées
+4. **Instrumentale** : on peut aussi l'ajouter, la changer ou la retirer après coup. La tonalité est
+   alors détectée sur la musique (plus fiable que sur la voix seule). Réglages : *Équilibre*
+   voix/musique et *Synchro voix* (±500 ms), utile avec des écouteurs Bluetooth qui ont du retard.
+5. **Comparer** avant/après au même volume, et regarder la courbe « Justesse » (notes chantées
    contre notes corrigées).
-5. **Exporter** en MP3 320/192 kbps ou en WAV 24/16 bits, puis partager ou enregistrer le fichier
+6. **Exporter** en MP3 320/192 kbps ou en WAV 24/16 bits, puis partager ou enregistrer le fichier
    avec la feuille de partage du système.
 
 ## Architecture
@@ -30,6 +35,7 @@ packages/voicefx/         Plugin FFI : moteur audio C++ partagé par les deux pl
   src/voicefx.h           API C (utilisée via dart:ffi)
   src/engine/             Moteur DSP (C++17)
   src/third_party/lame/   Encodeur MP3 LAME 3.100 (LGPL)
+  src/third_party/minimp3/ Décodeur MP3 minimp3 (CC0, domaine public)
   ios/                    Podspec + fichiers de renvoi vers src/ (CocoaPods)
   android/                Build Gradle/CMake (NDK)
   lib/                    API Dart (VoiceFxSession, VoiceFxParams…)
@@ -53,6 +59,7 @@ Les calculs tournent dans un isolate en arrière-plan pour que l'interface reste
 | Chaîne vocale | Coupe-bas 24 dB/oct, gate doux, de-esser à bande partagée, EQ (chaleur / présence / air), compresseur à genou doux |
 | Espace | Écho ping-pong stéréo, réverbération FDN 8 lignes avec diffusion |
 | Mastering | Normalisation à **-14 LUFS** (ITU-R BS.1770-4), limiteur à anticipation à -1 dBFS |
+| Instrumentale | Décodage MP3 (minimp3) / WAV, rééchantillonnage sinc fenêtré (Kaiser, polyphase), tonalité par chromagramme des pics spectraux, voix placée au niveau de la musique, master au niveau de l'instrumentale (-14 à -9 LUFS) |
 | Export | WAV 16 bits avec dither TPDF, 24 bits, 32 bits float ; MP3 LAME CBR qualité 2 avec tag Xing/LAME |
 
 ## Développement
@@ -79,6 +86,8 @@ flutter build ipa                 # iOS (compte Apple Developer requis)
 ```
 
 ## Licences
+
+Le décodeur MP3 (minimp3) est dans le domaine public (CC0) : aucune obligation.
 
 Le moteur MP3 est **LAME** (LGPL v2). Sur Android, LAME est compilé dans `libvoicefx.so`. Pour
 respecter la LGPL avec une distribution sur les stores, il faut fournir le code source de LAME

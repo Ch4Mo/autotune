@@ -79,7 +79,7 @@ class _StudioScreenState extends State<StudioScreen> {
             ],
           ),
           body: switch (_ctl.phase) {
-            StudioPhase.loading => const _Loading(),
+            StudioPhase.loading => _Loading(message: _ctl.loadingMessage),
             StudioPhase.error => _Error(message: _ctl.error ?? 'Erreur inconnue'),
             StudioPhase.ready => _buildReady(context),
           },
@@ -118,6 +118,8 @@ class _StudioScreenState extends State<StudioScreen> {
         const SizedBox(height: 8),
         Text(PresetInfo.of(_ctl.preset).description, style: const TextStyle(color: AppColors.textDim)),
         const SizedBox(height: 20),
+        _BackingSection(ctl: _ctl),
+        const SizedBox(height: 10),
         _KeyTile(ctl: _ctl),
         const SizedBox(height: 8),
         if (!p.robot) ...[
@@ -262,17 +264,19 @@ class _StudioScreenState extends State<StudioScreen> {
 }
 
 class _Loading extends StatelessWidget {
-  const _Loading();
+  const _Loading({required this.message});
+
+  final String message;
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        CircularProgressIndicator(),
-        SizedBox(height: 20),
-        Text('Analyse de votre voix…', style: TextStyle(fontSize: 16)),
-        SizedBox(height: 6),
-        Text('Détection des notes et de la tonalité', style: TextStyle(color: AppColors.textDim)),
+        const CircularProgressIndicator(),
+        const SizedBox(height: 20),
+        Text(message, style: const TextStyle(fontSize: 16)),
+        const SizedBox(height: 6),
+        const Text('Détection des notes et de la tonalité', style: TextStyle(color: AppColors.textDim)),
       ]),
     );
   }
@@ -371,11 +375,135 @@ class _KeyTile extends StatelessWidget {
             const SizedBox(width: 12),
             const Text('Tonalité', style: TextStyle(fontWeight: FontWeight.w600)),
             const Spacer(),
-            Text('${Strings.keyName(key)}${ctl.autoKey ? ' · auto' : ''}',
+            Text('${Strings.keyName(key)}${ctl.autoKey ? (ctl.keyFromBacking ? ' · musique' : ' · auto') : ''}',
                 style: const TextStyle(color: AppColors.textDim)),
             const Icon(Icons.chevron_right_rounded, color: AppColors.textDim),
           ]),
         ),
+      ),
+    );
+  }
+}
+
+class _BackingSection extends StatelessWidget {
+  const _BackingSection({required this.ctl});
+
+  final StudioController ctl;
+
+  Future<void> _choose(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final error = await ctl.chooseBacking();
+    if (error != null) messenger.showSnackBar(SnackBar(content: Text(error)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (ctl.busyBacking) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Row(children: [
+            SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2.5)),
+            SizedBox(width: 14),
+            Text("Analyse de l'instrumentale…"),
+          ]),
+        ),
+      );
+    }
+    if (!ctl.hasBacking) {
+      return Material(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () => _choose(context),
+          child: const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            child: Row(children: [
+              Icon(Icons.library_music_rounded, color: AppColors.accent),
+              SizedBox(width: 12),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Ajouter une instrumentale', style: TextStyle(fontWeight: FontWeight.w600)),
+                  Text('Mixez votre voix avec une musique (MP3, WAV)',
+                      style: TextStyle(color: AppColors.textDim, fontSize: 13)),
+                ]),
+              ),
+              Icon(Icons.add_rounded, color: AppColors.textDim),
+            ]),
+          ),
+        ),
+      );
+    }
+    final p = ctl.params;
+    final offset = p.backingOffsetMs.round();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 8, 12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            const Icon(Icons.library_music_rounded, color: AppColors.accent),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(ctl.take.backingName ?? 'Instrumentale',
+                  maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+            ),
+            Switch(
+              value: p.useBacking,
+              onChanged: (v) => ctl.update(p.copyWith(useBacking: v)),
+            ),
+          ]),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Opacity(
+              opacity: p.useBacking ? 1 : 0.4,
+              child: Column(children: [
+                _LabeledSlider(
+                  label: 'Équilibre',
+                  leftHint: 'Musique',
+                  rightHint: 'Voix',
+                  value: p.vocalBalance,
+                  min: -1,
+                  max: 1,
+                  enabled: p.useBacking,
+                  onChanged: (v) => ctl.update(p.copyWith(vocalBalance: v)),
+                ),
+                _LabeledSlider(
+                  label: 'Synchro voix',
+                  valueLabel: offset == 0 ? '0 ms' : '${offset > 0 ? '+' : ''}$offset ms',
+                  leftHint: 'Voix plus tôt',
+                  rightHint: 'Voix plus tard',
+                  value: p.backingOffsetMs,
+                  min: -500,
+                  max: 500,
+                  divisions: 100,
+                  enabled: p.useBacking,
+                  onChanged: (v) => ctl.update(p.copyWith(backingOffsetMs: v)),
+                ),
+              ]),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(0, 8, 8, 0),
+            child: Text(
+              'Si votre voix semble en retard sur la musique (fréquent avec des écouteurs Bluetooth), '
+              'déplacez « Synchro voix » vers la gauche.',
+              style: TextStyle(color: AppColors.textDim, fontSize: 12, height: 1.35),
+            ),
+          ),
+          Row(children: [
+            TextButton.icon(
+              onPressed: () => _choose(context),
+              icon: const Icon(Icons.swap_horiz_rounded),
+              label: const Text('Changer'),
+            ),
+            TextButton.icon(
+              onPressed: ctl.removeBacking,
+              icon: const Icon(Icons.delete_outline_rounded),
+              label: const Text('Retirer'),
+            ),
+          ]),
+        ]),
       ),
     );
   }

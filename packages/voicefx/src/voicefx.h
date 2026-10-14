@@ -54,6 +54,9 @@ typedef struct vfx_params {
   float gate;           /* 0..1  background-noise reduction between phrases */
   int32_t normalize;    /* 1 = loudness-normalise to -14 LUFS, true-peak safe */
   float output_gain_db; /* extra gain, applied before the final limiter */
+  int32_t use_backing;  /* 1 = mix the instrumental (if one is loaded) into the render */
+  float vocal_balance;  /* -1 (music louder) .. 1 (voice louder), 0 = balanced */
+  float backing_offset_ms; /* > 0 delays the voice against the instrumental */
 } vfx_params;
 
 enum {
@@ -83,6 +86,14 @@ VFX_API int32_t vfx_session_analyze(vfx_session* s);
 /* Detected key (after analyze). confidence 0..1. scale is 0 when unknown. */
 VFX_API int32_t vfx_session_detected_key(const vfx_session* s, int32_t* root, int32_t* scale, float* confidence);
 
+/* Loads an instrumental (MP3 or WAV) to sing over. It is resampled to the
+ * take's rate, its key is detected and used for pitch correction. */
+VFX_API int32_t vfx_session_set_backing(vfx_session* s, const char* path);
+VFX_API void vfx_session_clear_backing(vfx_session* s);
+VFX_API double vfx_session_backing_duration(const vfx_session* s); /* 0 = none */
+/* Key detected in the instrumental. Returns -1 when no instrumental is loaded. */
+VFX_API int32_t vfx_session_backing_key(const vfx_session* s, int32_t* root, int32_t* scale, float* confidence);
+
 /* Renders the processed result into the session (replaces the previous one). */
 VFX_API int32_t vfx_session_render(vfx_session* s, const vfx_params* p);
 VFX_API double vfx_session_rendered_duration(const vfx_session* s);
@@ -91,7 +102,8 @@ VFX_API double vfx_session_rendered_duration(const vfx_session* s);
 VFX_API int32_t vfx_session_export_wav(vfx_session* s, const char* path, int32_t bits);
 VFX_API int32_t vfx_session_export_mp3(vfx_session* s, const char* path, int32_t kbps);
 
-/* Writes the unprocessed take, loudness-matched to the render, for fair A/B listening. */
+/* Writes the unprocessed take (mixed with the instrumental like the render),
+ * loudness-matched to the render, for fair A/B listening. */
 VFX_API int32_t vfx_session_export_original_wav(vfx_session* s, const char* path);
 
 /* Peak envelope for drawing: `count` values in 0..1. which: 0 = original, 1 = render. */

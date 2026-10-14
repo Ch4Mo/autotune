@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,7 @@
 #include "engine/pitch_tracker.hpp"
 #include "engine/psola.hpp"
 #include "engine/renderer.hpp"
+#include "engine/resample.hpp"
 #include "engine/tuning.hpp"
 #include "synth_voice.hpp"
 #include "voicefx.h"
@@ -277,6 +279,121 @@ void testIoAndPresets(const std::string& tmpDir) {
   CHECK(std::strlen(vfx_last_error()) > 0, "error message set");
 }
 
+// Polyphonic "instrumental": chords with harmonics, bass and noise hits.
+vfx::Stereo synthBacking(double sr, double seconds, const std::vector<std::vector<int>>& chords, double chordLen) {
+  const size_t n = static_cast<size_t>(sr * seconds);
+  vfx::Stereo s(n);
+  std::mt19937 rng(3);
+  std::uniform_real_distribution<float> uni(-1.0f, 1.0f);
+  for (size_t i = 0; i < n; ++i) {
+    const double t = static_cast<double>(i) / sr;
+    const auto& ch = chords[static_cast<size_t>(t / chordLen) % chords.size()];
+    double v = 0;
+    for (int note : ch)
+      for (int h = 1; h <= 4; ++h) v += std::sin(2 * vfx::kPi * vfx::midiToHz(note) * h * t) / (h * 1.5);
+    v += 0.8 * std::sin(2 * vfx::kPi * vfx::midiToHz(ch[0] - 12) * t);  // bass
+    const double beat = std::fmod(t, 0.5);
+    if (beat < 0.03) v += 2.0 * uni(rng) * (1 - beat / 0.03);  // hi-hat-ish noise
+    s.l[i] = s.r[i] = static_cast<float>(0.05 * v);
+  }
+  return s;
+}
+
+void testResample() {
+  std::printf("resample\n");
+  const double inSr = 44100, outSr = 48000, f = 1000;
+  std::vector<float> x(44100);
+  for (size_t i = 0; i < x.size(); ++i) x[i] = static_cast<float>(0.5 * std::sin(2 * vfx::kPi * f * i / inSr));
+  auto y = vfx::resample(x, inSr, outSr);
+  CHECK(std::abs(static_cast<long>(y.size()) - 48000) <= 1, "length %zu", y.size());
+  double err = 0, sig = 0;
+  for (size_t i = 2000; i + 2000 < y.size(); ++i) {
+    const double ref = 0.5 * std::sin(2 * vfx::kPi * f * i / outSr);
+    err += (y[i] - ref) * (y[i] - ref);
+    sig += ref * ref;
+  }
+  const double snr = 10 * std::log10(sig / err);
+  CHECK(snr > 70.0, "resample SNR %.1f dB", snr);
+  // Down-sampling must remove content above the new Nyquist (no aliasing).
+  std::vector<float> hf(48000);
+  for (size_t i = 0; i < hf.size(); ++i) hf[i] = static_cast<float>(0.5 * std::sin(2 * vfx::kPi * 23000 * i / 48000.0));
+  auto d = vfx::resample(hf, 48000, 44100);
+  double e = 0;
+  for (size_t i = 2000; i + 2000 < d.size(); ++i) e += d[i] * d[i];
+  const double db = 10 * std::log10(e / (d.size() - 4000) / 0.125);
+  CHECK(db < -60.0, "aliasing %.1f dB", db);
+}
+
+void testBacking(const std::string& tmpDir) {
+  std::printf("instrumental\n");
+  // E minor progression: Em - C - G - D.
+  const std::vector<std::vector<int>> chords{{64, 67, 71}, {60, 64, 67}, {67, 71, 74}, {62, 66, 69}};
+  auto back = synthBacking(44100, 8.0, chords, 1.0);
+  const std::string mp3 = tmpDir + "/vfx_backing.mp3";
+  vfx::writeMp3(mp3, back, 44100, 192);
+  auto dec = vfx::readAudioFile(mp3);
+  CHECK(dec.sampleRate == 44100, "mp3 rate %.0f", dec.sampleRate);
+  CHECK(std::fabs(static_cast<double>(dec.samples.size()) - back.size()) < 44100 * 0.1, "mp3 length %zu", dec.samples.size());
+
+  std::vector<float> mono(dec.samples.l);
+  auto k = vfx::detectKeyFromAudio(mono, 44100);
+  // G major and E minor share the same notes; either answer is musically right.
+  const bool ok = (k.key.root == 4 && k.key.scale == vfx::ScaleType::Minor) ||
+                  (k.key.root == 7 && k.key.scale == vfx::ScaleType::Major);
+  CHECK(ok, "instrumental key root=%d scale=%d conf=%.2f", k.key.root, static_cast<int>(k.key.scale), k.confidence);
+
+  // Voice at 48 kHz over a 44.1 kHz MP3: resampled, mixed, offset applied.
+  const std::string voice = tmpDir + "/vfx_voice48.wav";
+  vfx::writeWavMono(voice, vfxtest::synthVoice(48000.0, 4.0, [](double t) { return t < 3.5 ? vfx::midiToHz(64.3) : 0.0; }),
+                    48000.0, 16);
+  vfx_session* s = vfx_session_open_wav(voice.c_str());
+  CHECK(s && vfx_session_analyze(s) == 0, "open voice");
+  if (!s) return;
+  CHECK(vfx_session_set_backing(s, mp3.c_str()) == 0, "set backing: %s", vfx_last_error());
+  CHECK(std::fabs(vfx_session_backing_duration(s) - 8.0) < 0.1, "backing duration %.2f", vfx_session_backing_duration(s));
+  int32_t root = -1, scale = -1;
+  float conf = 0;
+  CHECK(vfx_session_backing_key(s, &root, &scale, &conf) == 0, "backing key");
+
+  vfx_params p;
+  vfx_get_preset(VFX_PRESET_POP, &p);
+  CHECK(vfx_session_render(s, &p) == 0, "render with backing: %s", vfx_last_error());
+  const double withBacking = vfx_session_rendered_duration(s);
+  CHECK(std::fabs(withBacking - 8.0) < 0.2, "mix lasts as long as the instrumental (%.2f)", withBacking);
+  const auto& out = s->impl.output;
+  float pk = 0;
+  for (size_t i = 0; i < out.size(); ++i) pk = std::max(pk, std::max(std::fabs(out.l[i]), std::fabs(out.r[i])));
+  CHECK(pk <= vfx::dbToGain(-1.0f) + 1e-4f, "mix peak %.3f", pk);
+
+  // The voice offset moves the voice on the timeline: with a +1 s offset the
+  // first second only contains the instrumental -> same samples as voice muted.
+  p.backing_offset_ms = 1000.0f;
+  p.reverb = 0.0f; p.delay = 0.0f; p.doubler = 0.0f; p.normalize = 0;
+  vfx_session_render(s, &p);
+  vfx::Stereo a = s->impl.output;
+  p.vocal_balance = -1.0f;  // voice quieter: the first second must not change
+  vfx_session_render(s, &p);
+  const auto& b = s->impl.output;
+  double diffFirst = 0, diffLater = 0;
+  for (size_t i = 0; i < 44000; ++i) diffFirst += std::fabs(a.l[i] - b.l[i]);
+  for (size_t i = 60000; i < 140000; ++i) diffLater += std::fabs(a.l[i] - b.l[i]);
+  CHECK(diffFirst < 1e-3 && diffLater > 1.0, "offset placement first=%.4f later=%.2f", diffFirst, diffLater);
+
+  // Original A/B file includes the instrumental too.
+  const std::string orig = tmpDir + "/vfx_orig_backing.wav";
+  CHECK(vfx_session_export_original_wav(s, orig.c_str()) == 0, "original with backing");
+  CHECK(vfx::readWav(orig).samples.size() >= static_cast<size_t>(7.9 * 48000), "original has the instrumental length");
+
+  // Mixing can be switched off; clearing removes it.
+  p.use_backing = 0;
+  vfx_session_render(s, &p);
+  CHECK(vfx_session_rendered_duration(s) < 5.0, "voice only render %.2f", vfx_session_rendered_duration(s));
+  vfx_session_clear_backing(s);
+  CHECK(vfx_session_backing_duration(s) == 0.0, "cleared");
+  CHECK(vfx_session_set_backing(s, "/nonexistent.mp3") != 0, "missing instrumental must fail");
+  vfx_session_close(s);
+}
+
 void testPerformance() {
   std::printf("performance\n");
   auto x = vfxtest::synthVoice(kSr, 60.0, [](double t) { return 180.0 + 60.0 * std::sin(t); });
@@ -306,6 +423,8 @@ int main(int argc, char** argv) {
   testHarmony();
   testLimiterAndLoudness();
   testIoAndPresets(tmp);
+  testResample();
+  testBacking(tmp);
   testPerformance();
   std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

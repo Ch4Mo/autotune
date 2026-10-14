@@ -47,7 +47,7 @@ Future<void> showKeyPicker(BuildContext context, StudioController ctl) {
                   subtitle: det == null
                       ? 'Détection en cours…'
                       : det.isReliable
-                          ? 'Détectée : ${Strings.keyName(det.key)}'
+                          ? '${ctl.keyFromBacking ? "Détectée dans l'instrumentale" : 'Détectée'} : ${Strings.keyName(det.key)}'
                           : 'Mélodie trop courte : toutes les notes',
                   onTap: () => ctl.setKey(root: -1, scale: -1),
                 ),

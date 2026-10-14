@@ -11,6 +11,10 @@
 
 #include "lame.h"
 
+#define MINIMP3_FLOAT_OUTPUT
+#define MINIMP3_IMPLEMENTATION
+#include "third_party/minimp3/minimp3_ex.h"
+
 namespace vfx {
 
 namespace {
@@ -98,7 +102,10 @@ void writeWavInterleaved(const std::string& path, const std::vector<const std::v
 
 }  // namespace
 
-MonoAudio readWav(const std::string& path) {
+namespace {
+
+// Decodes a WAV into per-channel float buffers.
+std::vector<std::vector<float>> decodeWav(const std::string& path, double& sampleRateOut) {
   File f = openFile(path, "rb");
   std::fseek(f.get(), 0, SEEK_END);
   const long fileSize = std::ftell(f.get());
@@ -140,12 +147,10 @@ MonoAudio readWav(const std::string& path) {
     throw std::runtime_error("unsupported WAV bit depth");
 
   const size_t frames = dataLen / (bps * channels);
-  MonoAudio out;
-  out.sampleRate = sampleRate;
-  out.samples.resize(frames);
+  sampleRateOut = sampleRate;
+  std::vector<std::vector<float>> out(channels, std::vector<float>(frames));
   const uint8_t* src = data.data() + dataOff;
   for (size_t i = 0; i < frames; ++i) {
-    double acc = 0.0;
     for (uint16_t ch = 0; ch < channels; ++ch) {
       const uint8_t* s = src + (i * channels + ch) * bps;
       double v = 0.0;
@@ -163,12 +168,61 @@ MonoAudio readWav(const std::string& path) {
       } else {
         v = static_cast<int32_t>(le32(s)) / 2147483648.0;
       }
-      acc += v;
+      out[ch][i] = static_cast<float>(v);
     }
-    out.samples[i] = static_cast<float>(acc / channels);
   }
   return out;
 }
+
+bool hasWavMagic(const std::string& path) {
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) throw std::runtime_error("cannot open file: " + path);
+  char h[12] = {0};
+  const size_t n = std::fread(h, 1, 12, f);
+  std::fclose(f);
+  return n == 12 && std::memcmp(h, "RIFF", 4) == 0 && std::memcmp(h + 8, "WAVE", 4) == 0;
+}
+
+}  // namespace
+
+MonoAudio readWav(const std::string& path) {
+  MonoAudio out;
+  const auto chans = decodeWav(path, out.sampleRate);
+  const size_t frames = chans.empty() ? 0 : chans[0].size();
+  out.samples.assign(frames, 0.0f);
+  const float k = 1.0f / static_cast<float>(chans.size());
+  for (const auto& c : chans)
+    for (size_t i = 0; i < frames; ++i) out.samples[i] += c[i] * k;
+  return out;
+}
+
+StereoAudio readAudioFile(const std::string& path) {
+  StereoAudio out;
+  if (hasWavMagic(path)) {
+    auto chans = decodeWav(path, out.sampleRate);
+    out.samples.l = std::move(chans[0]);
+    out.samples.r = chans.size() > 1 ? std::move(chans[1]) : out.samples.l;
+    return out;
+  }
+  mp3dec_t dec;
+  mp3dec_file_info_t info;
+  std::memset(&info, 0, sizeof(info));
+  const int rc = mp3dec_load(&dec, path.c_str(), &info, nullptr, nullptr);
+  struct Free { mp3dec_file_info_t& i; ~Free() { std::free(i.buffer); } } guard{info};
+  if (rc != 0 || info.samples == 0 || info.channels <= 0 || info.hz <= 0)
+    throw std::runtime_error("unsupported audio file (use MP3 or WAV)");
+  const size_t ch = static_cast<size_t>(info.channels);
+  const size_t frames = info.samples / ch;
+  out.sampleRate = info.hz;
+  out.samples = Stereo(frames);
+  for (size_t i = 0; i < frames; ++i) {
+    out.samples.l[i] = info.buffer[i * ch];
+    out.samples.r[i] = info.buffer[i * ch + (ch > 1 ? 1 : 0)];
+  }
+  return out;
+}
+
+
 
 void writeWav(const std::string& path, const Stereo& s, double sampleRate, int bits) {
   writeWavInterleaved(path, {&s.l, &s.r}, sampleRate, bits);

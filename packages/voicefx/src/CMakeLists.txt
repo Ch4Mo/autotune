@@ -24,6 +24,7 @@ set(VOICEFX_SOURCES
   engine/pitch_tracker.cpp
   engine/psola.cpp
   engine/renderer.cpp
+  engine/resample.cpp
   engine/tuning.cpp
 )
 

@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:record/record.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -35,10 +37,19 @@ class _RecordScreenState extends State<RecordScreen> {
   double _peakHold = 0;
   bool _clipped = false;
 
+  // Instrumental played in the headphones while singing.
+  ({File file, String name})? _backing;
+  Duration? _backingLength;
+  AudioPlayer? _player;
+  StreamSubscription<PlayerState>? _playerSub;
+  double _offsetMs = 0;
+
   @override
   void dispose() {
     _ticker?.cancel();
     _ampSub?.cancel();
+    _playerSub?.cancel();
+    _player?.dispose();
     WakelockPlus.disable();
     if (_state == _State.recording) {
       _recorder.cancel();
@@ -58,9 +69,59 @@ class _RecordScreenState extends State<RecordScreen> {
         autoGain: false,
         echoCancel: false,
         noiseSuppress: false,
-        androidConfig: AndroidRecordConfig(audioSource: source),
+        // Bluetooth headsets: listen through them (A2DP) but keep recording with
+        // the phone's microphone; a headset mic (HFP/SCO) is limited to 8-16 kHz.
+        androidConfig: AndroidRecordConfig(audioSource: source, manageBluetooth: false),
+        iosConfig: const IosRecordConfig(categoryOptions: [
+          IosAudioCategoryOption.defaultToSpeaker,
+          IosAudioCategoryOption.allowBluetoothA2DP,
+        ]),
         audioInterruption: AudioInterruptionMode.pause,
       );
+
+  Future<void> _pickBacking() async {
+    try {
+      final picked = await pickInstrumental();
+      if (picked == null) return;
+      final probe = AudioPlayer();
+      Duration? length;
+      try {
+        length = await probe.setFilePath(picked.file.path);
+      } finally {
+        await probe.dispose();
+      }
+      if (!mounted) return;
+      setState(() {
+        _backing = picked;
+        _backingLength = length;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(e is FormatException ? e.message : "Impossible d'ouvrir ce fichier audio.")));
+    }
+  }
+
+  /// Starts the instrumental and measures when it really started, relative to
+  /// the recording, so the voice can be lined up with it afterwards.
+  Future<void> _startBacking(Stopwatch sync, Duration recStart) async {
+    final player = _player;
+    if (player == null) return;
+    _playerSub = player.playerStateStream.listen((s) {
+      if (s.processingState == ProcessingState.completed) _stop();
+    });
+    unawaited(player.play());
+    final started = Completer<void>();
+    late final StreamSubscription<Duration> sub;
+    sub = player.positionStream.listen((pos) {
+      if (pos > const Duration(milliseconds: 30) && !started.isCompleted) {
+        final playStart = sync.elapsed - pos;
+        _offsetMs = (recStart - playStart).inMicroseconds / 1000.0;
+        started.complete();
+        sub.cancel();
+      }
+    });
+  }
 
   Future<void> _start() async {
     setState(() => _state = _State.starting);
@@ -71,6 +132,11 @@ class _RecordScreenState extends State<RecordScreen> {
       return;
     }
     final draft = await widget.repo.createDraft();
+    if (_backing != null) {
+      _player = AudioPlayer();
+      await _player!.setFilePath(_backing!.file.path);
+    }
+    final sync = Stopwatch()..start();
     try {
       try {
         // Android's CDD requires this source to have AGC and noise reduction
@@ -86,6 +152,8 @@ class _RecordScreenState extends State<RecordScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Impossible de démarrer l'enregistrement : $e")));
       return;
     }
+    final recStart = sync.elapsed;
+    await _startBacking(sync, recStart);
     HapticFeedback.mediumImpact();
     await WakelockPlus.enable();
     _draft = draft;
@@ -117,6 +185,8 @@ class _RecordScreenState extends State<RecordScreen> {
     await WakelockPlus.disable();
     HapticFeedback.mediumImpact();
     await _recorder.stop();
+    await _playerSub?.cancel();
+    await _player?.stop();
     final draft = _draft!;
     final seconds = _clock.elapsedMilliseconds / 1000.0;
     if (seconds < 1.0 || !await draft.audioFile.exists()) {
@@ -128,6 +198,11 @@ class _RecordScreenState extends State<RecordScreen> {
       return;
     }
     draft.duration = seconds;
+    final backing = _backing;
+    if (backing != null) {
+      draft.recordedOffsetMs = _offsetMs;
+      await draft.attachBacking(backing.file, backing.name);
+    }
     await widget.repo.commit(draft);
     if (!mounted) return;
     await Navigator.of(context).pushReplacement(MaterialPageRoute(
@@ -187,17 +262,78 @@ class _RecordScreenState extends State<RecordScreen> {
             const SizedBox(height: 32),
             _LevelBar(level: recording ? _level : 0, peak: recording ? _peakHold : 0),
             const Spacer(),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(32, 0, 32, 24),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: _BackingCard(
+                name: _backing?.name,
+                length: _backingLength,
+                locked: _state != _State.idle,
+                onPick: _pickBacking,
+                onRemove: () => setState(() {
+                  _backing = null;
+                  _backingLength = null;
+                }),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(32, 16, 32, 24),
               child: Text(
-                'Astuce : tenez le téléphone à 15–20 cm de votre bouche, dans une pièce calme. '
-                'Pour chanter sur une musique, écoutez-la au casque.',
+                _backing != null
+                    ? 'Mettez un casque ou des écouteurs : la musique ne doit pas être captée par le micro. '
+                        "L'enregistrement s'arrête tout seul à la fin du morceau."
+                    : 'Astuce : tenez le téléphone à 15–20 cm de votre bouche, dans une pièce calme.',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: AppColors.textDim, fontSize: 13, height: 1.4),
+                style: const TextStyle(color: AppColors.textDim, fontSize: 13, height: 1.4),
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _BackingCard extends StatelessWidget {
+  const _BackingCard(
+      {required this.name, required this.length, required this.locked, required this.onPick, required this.onRemove});
+
+  final String? name;
+  final Duration? length;
+  final bool locked;
+  final VoidCallback onPick;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    if (name == null) {
+      return OutlinedButton.icon(
+        onPressed: locked ? null : onPick,
+        style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(52)),
+        icon: const Icon(Icons.library_music_rounded),
+        label: const Text('Chanter sur une instrumentale (MP3, WAV)'),
+      );
+    }
+    return Material(
+      color: AppColors.surface,
+      borderRadius: BorderRadius.circular(16),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 6, 10),
+        child: Row(children: [
+          const Icon(Icons.library_music_rounded, color: AppColors.accent),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(name!, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+              Text(length == null ? 'Instrumentale' : 'Instrumentale · ${Strings.duration(length!.inMilliseconds / 1000)}',
+                  style: const TextStyle(color: AppColors.textDim, fontSize: 13)),
+            ]),
+          ),
+          IconButton(
+            tooltip: "Retirer l'instrumentale",
+            onPressed: locked ? null : onRemove,
+            icon: const Icon(Icons.close_rounded),
+          ),
+        ]),
       ),
     );
   }

@@ -90,6 +90,9 @@ class VoiceFxParams {
     this.gate = 0.3,
     this.normalize = true,
     this.outputGainDb = 0,
+    this.useBacking = true,
+    this.vocalBalance = 0,
+    this.backingOffsetMs = 0,
   });
 
   /// -1 = use the detected key.
@@ -117,6 +120,15 @@ class VoiceFxParams {
   final double gate;
   final bool normalize;
   final double outputGainDb;
+
+  /// Mix the instrumental (when the session has one) into the render.
+  final bool useBacking;
+
+  /// -1 (music louder) .. 1 (voice louder).
+  final double vocalBalance;
+
+  /// Positive values delay the voice against the instrumental.
+  final double backingOffsetMs;
 
   /// Settings of a built-in preset (read from the native engine).
   static VoiceFxParams preset(VoicePreset preset) {
@@ -153,6 +165,9 @@ class VoiceFxParams {
         gate: s.gate,
         normalize: s.normalize != 0,
         outputGainDb: s.outputGainDb,
+        useBacking: s.useBacking != 0,
+        vocalBalance: s.vocalBalance,
+        backingOffsetMs: s.backingOffsetMs,
       );
 
   void _writeTo(VfxParamsStruct s) {
@@ -178,7 +193,10 @@ class VoiceFxParams {
       ..deess = deess
       ..gate = gate
       ..normalize = normalize ? 1 : 0
-      ..outputGainDb = outputGainDb;
+      ..outputGainDb = outputGainDb
+      ..useBacking = useBacking ? 1 : 0
+      ..vocalBalance = vocalBalance
+      ..backingOffsetMs = backingOffsetMs;
   }
 
   VoiceFxParams copyWith({
@@ -204,6 +222,9 @@ class VoiceFxParams {
     double? gate,
     bool? normalize,
     double? outputGainDb,
+    bool? useBacking,
+    double? vocalBalance,
+    double? backingOffsetMs,
   }) =>
       VoiceFxParams(
         keyRoot: keyRoot ?? this.keyRoot,
@@ -228,6 +249,9 @@ class VoiceFxParams {
         gate: gate ?? this.gate,
         normalize: normalize ?? this.normalize,
         outputGainDb: outputGainDb ?? this.outputGainDb,
+        useBacking: useBacking ?? this.useBacking,
+        vocalBalance: vocalBalance ?? this.vocalBalance,
+        backingOffsetMs: backingOffsetMs ?? this.backingOffsetMs,
       );
 
   Map<String, Object> toJson() => {
@@ -253,6 +277,9 @@ class VoiceFxParams {
         'gate': gate,
         'normalize': normalize,
         'outputGainDb': outputGainDb,
+        'useBacking': useBacking,
+        'vocalBalance': vocalBalance,
+        'backingOffsetMs': backingOffsetMs,
       };
 
   factory VoiceFxParams.fromJson(Map<String, dynamic> j) {
@@ -282,6 +309,9 @@ class VoiceFxParams {
       gate: f('gate', d.gate),
       normalize: j['normalize'] as bool? ?? d.normalize,
       outputGainDb: f('outputGainDb', d.outputGainDb),
+      useBacking: j['useBacking'] as bool? ?? d.useBacking,
+      vocalBalance: f('vocalBalance', d.vocalBalance),
+      backingOffsetMs: f('backingOffsetMs', d.backingOffsetMs),
     );
   }
 
@@ -330,6 +360,12 @@ class VoiceFxSession {
   bool _disposed = false;
   Future<void> _queue = Future.value();
 
+  /// Key of the loaded instrumental, null when there is none.
+  KeyDetection? backingKey;
+
+  /// Duration of the loaded instrumental (s), 0 when there is none.
+  double backingDuration = 0;
+
   /// Loads a WAV take and analyses it (pitch tracking + key detection).
   static Future<VoiceFxSession> open(String wavPath) async {
     final r = await Isolate.run(() {
@@ -367,6 +403,35 @@ class VoiceFxSession {
     final result = _queue.then((_) => Isolate.run(() => job(VoiceFxBindings.instance, Pointer.fromAddress(address))));
     _queue = result.then((_) {}, onError: (_) {});
     return result;
+  }
+
+  /// Loads an instrumental (MP3 or WAV) to sing over and detects its key.
+  Future<KeyDetection> setBacking(String path) async {
+    final r = await _run((b, s) {
+      final p = path.toNativeUtf8();
+      final root = calloc<Int32>(), scale = calloc<Int32>();
+      final conf = calloc<Float>();
+      try {
+        if (b.setBacking(s, p) != 0) throw VoiceFxException(b.errorMessage());
+        b.backingKey(s, root, scale, conf);
+        return (b.backingDuration(s), root.value, scale.value, conf.value);
+      } finally {
+        calloc
+          ..free(p)
+          ..free(root)
+          ..free(scale)
+          ..free(conf);
+      }
+    });
+    backingDuration = r.$1;
+    backingKey = KeyDetection(MusicalKey(r.$2, MusicalScale.values[r.$3.clamp(0, MusicalScale.values.length - 1)]), r.$4);
+    return backingKey!;
+  }
+
+  Future<void> clearBacking() async {
+    await _run((b, s) => b.clearBacking(s));
+    backingKey = null;
+    backingDuration = 0;
   }
 
   /// Renders the take with [params]. Returns the rendered duration (s).

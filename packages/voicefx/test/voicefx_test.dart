@@ -52,7 +52,7 @@ void main() {
   final skip = (lib == null || lib.isEmpty) ? 'set VOICEFX_LIB to a desktop build of libvoicefx' : null;
 
   test('params struct matches the C layout', () {
-    expect(sizeOf<VfxParamsStruct>(), 22 * 4);
+    expect(sizeOf<VfxParamsStruct>(), 25 * 4);
   });
 
   test('presets round-trip through the native engine', () {
@@ -96,6 +96,16 @@ void main() {
       s.render(VoiceFxParams.preset(VoicePreset.choir)),
       s.waveform(10),
     ]);
+    // Instrumental: the take itself works as a (WAV) backing track.
+    final key = await s.setBacking(wav.path);
+    expect(key.key.root, inInclusiveRange(0, 11));
+    expect(s.backingDuration, closeTo(2.0, 0.01));
+    final mixed = await s.render(VoiceFxParams.preset(VoicePreset.natural).copyWith(backingOffsetMs: 500));
+    expect(mixed, greaterThan(2.4));
+    await s.clearBacking();
+    expect(s.backingKey, isNull);
+    await expectLater(s.setBacking('/nope.mp3'), throwsA(isA<VoiceFxException>()));
+
     await s.dispose();
     dir.deleteSync(recursive: true);
   }, skip: skip);

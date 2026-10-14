@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <numeric>
 
 #include "dsp.hpp"
+#include "fft.hpp"
 
 namespace vfx {
 
@@ -64,32 +66,17 @@ double pearson(const std::array<double, 12>& a, const std::array<double, 12>& b)
 
 }  // namespace
 
-KeyEstimate detectKey(const PitchTrack& track) {
+namespace {
+
+// Correlates a pitch-class histogram with the 24 major / minor key profiles.
+KeyEstimate keyFromHistogram(const std::array<double, 12>& hist) {
   // Krumhansl-Kessler key profiles.
   static const std::array<double, 12> kMajorProfile{6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
                                                      2.52, 5.19, 2.39, 3.66, 2.29, 2.88};
   static const std::array<double, 12> kMinorProfile{6.33, 2.68, 3.52, 5.38, 2.60, 3.53,
                                                      2.54, 4.75, 3.98, 2.69, 3.34, 3.17};
-
-  std::array<double, 12> hist{};
-  double total = 0.0;
-  for (size_t i = 0; i < track.frames(); ++i) {
-    const float f = track.f0[i];
-    if (f <= 0.0f) continue;
-    const double m = hzToMidi(f);
-    const int n = static_cast<int>(std::lround(m));
-    // Frames close to a semitone centre are more reliable than slides.
-    const double w = track.confidence[i] * (1.0 - std::min(1.0, std::fabs(m - n) * 2.0));
-    hist[static_cast<size_t>(pitchClass(n))] += w;
-    total += w;
-  }
-
   KeyEstimate est;
   est.key = Key{0, ScaleType::Chromatic};
-  // Need about one second of confident singing to say anything useful.
-  const double framesPerSecond = track.sampleRate / track.hop;
-  if (total < framesPerSecond * 0.5) return est;
-
   double best = -2.0, second = -2.0;
   for (int root = 0; root < 12; ++root) {
     for (int minor = 0; minor < 2; ++minor) {
@@ -108,6 +95,80 @@ KeyEstimate detectKey(const PitchTrack& track) {
   }
   est.confidence = static_cast<float>(std::clamp((best - second) * 5.0 + std::max(0.0, best) * 0.5, 0.0, 1.0));
   return est;
+}
+
+}  // namespace
+
+KeyEstimate detectKey(const PitchTrack& track) {
+  std::array<double, 12> hist{};
+  double total = 0.0;
+  for (size_t i = 0; i < track.frames(); ++i) {
+    const float f = track.f0[i];
+    if (f <= 0.0f) continue;
+    const double m = hzToMidi(f);
+    const int n = static_cast<int>(std::lround(m));
+    // Frames close to a semitone centre are more reliable than slides.
+    const double w = track.confidence[i] * (1.0 - std::min(1.0, std::fabs(m - n) * 2.0));
+    hist[static_cast<size_t>(pitchClass(n))] += w;
+    total += w;
+  }
+  // Need about one second of confident singing to say anything useful.
+  const double framesPerSecond = track.sampleRate / track.hop;
+  if (total < framesPerSecond * 0.5) return KeyEstimate{Key{0, ScaleType::Chromatic}, 0.0f};
+  return keyFromHistogram(hist);
+}
+
+KeyEstimate detectKeyFromAudio(const std::vector<float>& mono, double sampleRate) {
+  // Work around 11 kHz: plenty for fundamentals and low harmonics.
+  const int factor = std::max(1, static_cast<int>(sampleRate / 11025.0));
+  const double sr = sampleRate / factor;
+  std::vector<float> x;
+  {
+    Biquad a, b;
+    a.setup(Biquad::Type::LowPass, sampleRate, 0.4 * sr, 0.5411961);
+    b.setup(Biquad::Type::LowPass, sampleRate, 0.4 * sr, 1.3065630);
+    x.reserve(mono.size() / static_cast<size_t>(factor) + 1);
+    for (size_t i = 0; i < mono.size(); ++i) {
+      const float v = b.process(a.process(mono[i]));
+      if (i % static_cast<size_t>(factor) == 0) x.push_back(v);
+    }
+  }
+  const size_t N = 4096, hop = 2048;
+  if (x.size() < N * 4) return KeyEstimate{Key{0, ScaleType::Chromatic}, 0.0f};
+
+  FFT fft(N);
+  std::vector<float> window(N);
+  for (size_t i = 0; i < N; ++i) window[i] = static_cast<float>(0.5 - 0.5 * std::cos(2.0 * kPi * i / (N - 1)));
+  std::vector<std::complex<float>> buf(N);
+  std::vector<float> mag(N / 2);
+  const size_t lo = static_cast<size_t>(80.0 * N / sr), hi = static_cast<size_t>(2000.0 * N / sr);
+
+  std::array<double, 12> hist{};
+  for (size_t s = 0; s + N <= x.size(); s += hop) {
+    for (size_t i = 0; i < N; ++i) buf[i] = x[s + i] * window[i];
+    fft.forward(buf);
+    float frameMax = 1e-9f;
+    for (size_t k = 0; k < N / 2; ++k) { mag[k] = std::abs(buf[k]); frameMax = std::max(frameMax, mag[k]); }
+    // Only spectral peaks (tonal components) vote; drums are mostly noise-like.
+    std::array<double, 12> frame{};
+    for (size_t k = std::max<size_t>(lo, 1); k < hi && k + 1 < N / 2; ++k) {
+      if (mag[k] <= mag[k - 1] || mag[k] < mag[k + 1] || mag[k] < 0.02f * frameMax) continue;
+      // Parabolic peak interpolation for an accurate frequency.
+      const double a = mag[k - 1], b = mag[k], c = mag[k + 1];
+      const double den = a - 2 * b + c;
+      const double off = std::fabs(den) > 1e-12 ? 0.5 * (a - c) / den : 0.0;
+      const double hz = (static_cast<double>(k) + off) * sr / N;
+      const double m = hzToMidi(hz);
+      const int note = static_cast<int>(std::lround(m));
+      if (std::fabs(m - note) > 0.35) continue;  // between semitones: not a clear note
+      frame[static_cast<size_t>(pitchClass(note))] += std::sqrt(mag[k] / frameMax);
+    }
+    double sum = 0;
+    for (double v : frame) sum += v;
+    if (sum <= 0) continue;
+    for (size_t i = 0; i < 12; ++i) hist[i] += frame[i] / sum;  // each frame votes equally
+  }
+  return keyFromHistogram(hist);
 }
 
 Correction correctPitch(const PitchTrack& track, const CorrectionParams& p) {

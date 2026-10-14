@@ -49,6 +49,12 @@ final class VfxParamsStruct extends Struct {
   external int normalize;
   @Float()
   external double outputGainDb;
+  @Int32()
+  external int useBacking;
+  @Float()
+  external double vocalBalance;
+  @Float()
+  external double backingOffsetMs;
 }
 
 final class VfxSessionOpaque extends Opaque {}
@@ -70,6 +76,15 @@ class VoiceFxBindings {
         detectedKey = lib.lookupFunction<
             Int32 Function(SessionPtr, Pointer<Int32>, Pointer<Int32>, Pointer<Float>),
             int Function(SessionPtr, Pointer<Int32>, Pointer<Int32>, Pointer<Float>)>('vfx_session_detected_key'),
+        setBacking = lib.lookupFunction<Int32 Function(SessionPtr, Pointer<Utf8>), int Function(SessionPtr, Pointer<Utf8>)>(
+            'vfx_session_set_backing'),
+        clearBacking =
+            lib.lookupFunction<Void Function(SessionPtr), void Function(SessionPtr)>('vfx_session_clear_backing'),
+        backingDuration = lib.lookupFunction<Double Function(SessionPtr), double Function(SessionPtr)>(
+            'vfx_session_backing_duration'),
+        backingKey = lib.lookupFunction<
+            Int32 Function(SessionPtr, Pointer<Int32>, Pointer<Int32>, Pointer<Float>),
+            int Function(SessionPtr, Pointer<Int32>, Pointer<Int32>, Pointer<Float>)>('vfx_session_backing_key'),
         render = lib.lookupFunction<Int32 Function(SessionPtr, Pointer<VfxParamsStruct>),
             int Function(SessionPtr, Pointer<VfxParamsStruct>)>('vfx_session_render'),
         renderedDuration = lib.lookupFunction<Double Function(SessionPtr), double Function(SessionPtr)>(
@@ -93,6 +108,10 @@ class VoiceFxBindings {
   final double Function(SessionPtr) duration;
   final int Function(SessionPtr) analyze;
   final int Function(SessionPtr, Pointer<Int32>, Pointer<Int32>, Pointer<Float>) detectedKey;
+  final int Function(SessionPtr, Pointer<Utf8>) setBacking;
+  final void Function(SessionPtr) clearBacking;
+  final double Function(SessionPtr) backingDuration;
+  final int Function(SessionPtr, Pointer<Int32>, Pointer<Int32>, Pointer<Float>) backingKey;
   final int Function(SessionPtr, Pointer<VfxParamsStruct>) render;
   final double Function(SessionPtr) renderedDuration;
   final int Function(SessionPtr, Pointer<Utf8>, int) exportWav;

@@ -80,6 +80,29 @@ int32_t vfx_session_detected_key(const vfx_session* s, int32_t* root, int32_t* s
   return 0;
 }
 
+int32_t vfx_session_set_backing(vfx_session* s, const char* path) {
+  if (!s || !path) return fail("null argument");
+  return guarded([&] { s->impl.setBacking(path); });
+}
+
+void vfx_session_clear_backing(vfx_session* s) {
+  if (s) s->impl.clearBacking();
+}
+
+double vfx_session_backing_duration(const vfx_session* s) {
+  if (!s || !s->impl.hasBacking) return 0.0;
+  return static_cast<double>(s->impl.backing.size()) / s->impl.sampleRate;
+}
+
+int32_t vfx_session_backing_key(const vfx_session* s, int32_t* root, int32_t* scale, float* confidence) {
+  if (!s) return fail("null session");
+  if (!s->impl.hasBacking) return fail("no instrumental loaded");
+  if (root) *root = s->impl.backingKey.key.root;
+  if (scale) *scale = static_cast<int32_t>(s->impl.backingKey.key.scale);
+  if (confidence) *confidence = s->impl.backingKey.confidence;
+  return 0;
+}
+
 int32_t vfx_session_render(vfx_session* s, const vfx_params* p) {
   if (!s || !p) return fail("null argument");
   return guarded([&] { s->impl.render(*p); });

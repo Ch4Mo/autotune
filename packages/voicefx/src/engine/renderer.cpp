@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
+#include "audio_io.hpp"
 #include "dsp.hpp"
+#include "resample.hpp"
 
 namespace vfx {
 
@@ -36,6 +39,9 @@ vfx_params baseParams() {
   p.gate = 0.3f;
   p.normalize = 1;
   p.output_gain_db = 0.0f;
+  p.use_backing = 1;
+  p.vocal_balance = 0.0f;
+  p.backing_offset_ms = 0.0f;
   return p;
 }
 
@@ -68,11 +74,11 @@ Key resolveKey(const vfx_params& p, const KeyEstimate& detected) {
   return k;
 }
 
-void master(Stereo& s, double sr, bool normalize, float extraGainDb, double& lufsOut) {
+void master(Stereo& s, double sr, bool normalize, float extraGainDb, double targetLufs, double& lufsOut) {
   float gainDb = extraGainDb;
   if (normalize) {
     const double l = integratedLoudness(s, sr);
-    if (l > -100.0) gainDb += static_cast<float>(std::clamp(kTargetLufs - l, -20.0, 36.0));
+    if (l > -100.0) gainDb += static_cast<float>(std::clamp(targetLufs - l, -20.0, 36.0));
   }
   const float g = dbToGain(gainDb);
   for (size_t i = 0; i < s.size(); ++i) { s.l[i] *= g; s.r[i] *= g; }
@@ -126,6 +132,57 @@ vfx_params presetParams(int preset) {
   return p;
 }
 
+void Session::setBacking(const std::string& path) {
+  StereoAudio a = readAudioFile(path);
+  if (a.samples.size() == 0) throw std::runtime_error("the instrumental is empty");
+  if (a.samples.size() / a.sampleRate > 10 * 60) throw std::runtime_error("the instrumental is longer than 10 minutes");
+  Stereo b;
+  b.l = resample(a.samples.l, a.sampleRate, sampleRate);
+  std::vector<float>().swap(a.samples.l);
+  b.r = resample(a.samples.r, a.sampleRate, sampleRate);
+  std::vector<float>().swap(a.samples.r);
+  std::vector<float> mono(b.size());
+  for (size_t i = 0; i < mono.size(); ++i) mono[i] = 0.5f * (b.l[i] + b.r[i]);
+  backingKey = detectKeyFromAudio(mono, sampleRate);
+  backingLufs = integratedLoudness(b, sampleRate);
+  if (backingLufs < -70.0) backingLufs = -14.0;  // silent file: behave like no reference
+  backing = std::move(b);
+  hasBacking = true;
+}
+
+void Session::clearBacking() {
+  hasBacking = false;
+  backing = Stereo();
+  backingKey = KeyEstimate();
+}
+
+Stereo Session::mixWithBacking(const Stereo& voice, const vfx_params& p, double& targetLufs,
+                               size_t& contentLen) const {
+  const double sr = sampleRate;
+  const long offset = std::lround(std::clamp(p.backing_offset_ms, -2000.0f, 2000.0f) * 0.001 * sr);
+  const size_t voiceEnd = static_cast<size_t>(std::max(0L, static_cast<long>(voice.size()) + offset));
+  const size_t len = std::max(backing.size(), voiceEnd);
+  // Voice sits ~1.5 LU under the music by default; the balance moves it +-9 dB.
+  const double vl = integratedLoudness(voice, sr);
+  const double wanted = backingLufs - 1.5 + 9.0 * std::clamp(p.vocal_balance, -1.0f, 1.0f);
+  const float g = vl > -70.0 ? dbToGain(static_cast<float>(std::clamp(wanted - vl, -30.0, 36.0))) : 1.0f;
+  Stereo out(len);
+  std::copy(backing.l.begin(), backing.l.end(), out.l.begin());
+  std::copy(backing.r.begin(), backing.r.end(), out.r.begin());
+  for (size_t i = 0; i < voice.size(); ++i) {
+    const long j = static_cast<long>(i) + offset;
+    if (j < 0 || j >= static_cast<long>(len)) continue;
+    out.l[static_cast<size_t>(j)] += g * voice.l[i];
+    out.r[static_cast<size_t>(j)] += g * voice.r[i];
+  }
+  // Keep the loudness of the instrumental (it is usually already mastered),
+  // within sensible bounds.
+  targetLufs = std::clamp(backingLufs + 1.0, kTargetLufs, -9.0);
+  // Content = the instrumental and the dry voice; tails beyond may be trimmed.
+  contentLen = std::max(backing.size(), static_cast<size_t>(std::max(0L, static_cast<long>(input.size()) + offset)));
+  return out;
+}
+
 void Session::analyze() {
   track = trackPitch(input, sampleRate);
   marks = computePitchMarks(input, track);
@@ -163,7 +220,10 @@ void Session::render(const vfx_params& p) {
   }
 
   // --- 2. Pitch correction --------------------------------------------------
-  const Key key_ = resolveKey(p, key);
+  // A loaded instrumental gives a more reliable key than the voice alone.
+  const KeyEstimate& detected =
+      (hasBacking && backingKey.key.scale != ScaleType::Chromatic && backingKey.confidence >= 0.2f) ? backingKey : key;
+  const Key key_ = resolveKey(p, detected);
   CorrectionParams cp;
   cp.key = key_;
   cp.amount = std::clamp(p.correction, 0.0f, 1.0f);
@@ -197,7 +257,7 @@ void Session::render(const vfx_params& p) {
   if (p.harmony > 0.0f) {
     Key hk = key_;
     if (hk.scale == ScaleType::Chromatic)
-      hk = key.key.scale != ScaleType::Chromatic ? key.key : Key{key_.root, ScaleType::Major};
+      hk = detected.key.scale != ScaleType::Chromatic ? detected.key : Key{key_.root, ScaleType::Major};
     struct Voice { int degrees; float semis; float pan; float formant; size_t delayMs; };
     std::vector<Voice> voices;
     switch (p.harmony_mode) {
@@ -261,15 +321,20 @@ void Session::render(const vfx_params& p) {
       dry.r[i] = r + echoGain * er + verbGain * wr;
     }
   }
+  // --- 6. Instrumental + mastering --------------------------------------------
+  double target = kTargetLufs;
+  size_t contentLen = n;
+  if (mixesBacking(p)) {
+    Stereo m = mixWithBacking(dry, p, target, contentLen);
+    dry = std::move(m);
+  }
   Stereo& mix = dry;
-
-  // --- 6. Mastering --------------------------------------------------------------
-  master(mix, sr, p.normalize != 0, p.output_gain_db, outputLufs);
+  master(mix, sr, p.normalize != 0, p.output_gain_db, target, outputLufs);
 
   // Trim the silent part of the tail and fade the very end.
   size_t end = mix.size();
   const float floor = dbToGain(-75.0f);
-  while (end > n && std::fabs(mix.l[end - 1]) < floor && std::fabs(mix.r[end - 1]) < floor) --end;
+  while (end > contentLen && std::fabs(mix.l[end - 1]) < floor && std::fabs(mix.r[end - 1]) < floor) --end;
   end = std::min(mix.size(), end + static_cast<size_t>(0.05 * sr));
   mix.l.resize(end);
   mix.r.resize(end);
@@ -281,6 +346,7 @@ void Session::render(const vfx_params& p) {
   }
 
   output = std::move(dry);
+  lastParams = p;
   rendered = true;
 }
 
@@ -288,6 +354,12 @@ Stereo Session::loudnessMatchedOriginal() const {
   Stereo s(input.size());
   s.l = input;
   s.r = input;
+  if (rendered && mixesBacking(lastParams)) {
+    double unused = 0;
+    size_t unusedLen = 0;
+    Stereo m = mixWithBacking(s, lastParams, unused, unusedLen);
+    s = std::move(m);
+  }
   const double target = rendered ? outputLufs : kTargetLufs;
   const double l = integratedLoudness(s, sampleRate);
   if (l > -100.0) {
