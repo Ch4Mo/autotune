@@ -118,6 +118,8 @@ class _StudioScreenState extends State<StudioScreen> {
         const SizedBox(height: 8),
         Text(PresetInfo.of(_ctl.preset).description, style: const TextStyle(color: AppColors.textDim)),
         const SizedBox(height: 20),
+        _CleanSection(ctl: _ctl),
+        const SizedBox(height: 10),
         _BackingSection(ctl: _ctl),
         const SizedBox(height: 10),
         _KeyTile(ctl: _ctl),
@@ -135,7 +137,9 @@ class _StudioScreenState extends State<StudioScreen> {
             rightHint: 'Robotique',
             value: _robotic(p),
             enabled: p.correction > 0,
-            onChanged: (v) => _ctl.update(p.copyWith(retuneMs: 200 * (1 - v) * (1 - v), humanize: 0.8 * (1 - v))),
+            // Cubic curve: the robotic character arrives in the second half.
+            onChanged: (v) => _ctl.update(p.copyWith(
+                retuneMs: 150 * math.pow(1 - v, 3).toDouble(), humanize: 0.7 * (1 - v) * (1 - v))),
           ),
         ],
         _LabeledSlider(
@@ -151,7 +155,8 @@ class _StudioScreenState extends State<StudioScreen> {
     );
   }
 
-  static double _robotic(VoiceFxParams p) => (1 - math.sqrt((p.retuneMs / 200).clamp(0.0, 1.0))).clamp(0.0, 1.0);
+  static double _robotic(VoiceFxParams p) =>
+      (1 - math.pow((p.retuneMs / 150).clamp(0.0, 1.0), 1 / 3)).toDouble().clamp(0.0, 1.0);
 
   Widget _display() {
     return Card(
@@ -380,6 +385,60 @@ class _KeyTile extends StatelessWidget {
             const Icon(Icons.chevron_right_rounded, color: AppColors.textDim),
           ]),
         ),
+      ),
+    );
+  }
+}
+
+class _CleanSection extends StatelessWidget {
+  const _CleanSection({required this.ctl});
+
+  final StudioController ctl;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = ctl.params;
+    final on = p.denoise > 0;
+    final n = ctl.noise;
+    final String status;
+    if (n == null || !n.isNoisy) {
+      status = on ? 'Souffle et bourdonnements atténués' : 'Peu de bruit de fond détecté';
+    } else {
+      status = n.humHz > 0
+          ? 'Bruit de fond et ronflement électrique (${n.humHz.round()} Hz) détectés'
+          : 'Bruit de fond détecté sur cette prise';
+    }
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(Icons.cleaning_services_rounded, color: on ? AppColors.accent : AppColors.textDim),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Nettoyage du son', style: TextStyle(fontWeight: FontWeight.w600)),
+                Text(status,
+                    style: TextStyle(
+                        color: (n?.isNoisy ?? false) && !on ? AppColors.accent : AppColors.textDim, fontSize: 13)),
+              ]),
+            ),
+            Switch(value: on, onChanged: (v) => ctl.setDenoise(v ? 0.5 : 0)),
+          ]),
+          if (on)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: _LabeledSlider(
+                label: 'Intensité',
+                leftHint: 'Léger',
+                rightHint: 'Fort',
+                value: p.denoise,
+                min: 0.05,
+                max: 1,
+                onChanged: ctl.setDenoise,
+              ),
+            ),
+        ]),
       ),
     );
   }
@@ -656,7 +715,9 @@ class _Advanced extends StatelessWidget {
             onChanged: (v) => ctl.update(p.copyWith(compression: v)),
           ),
           _LabeledSlider(
-            label: 'Réduction du bruit',
+            label: 'Silence entre les phrases',
+            leftHint: 'Naturel',
+            rightHint: 'Coupé',
             value: p.gate,
             onChanged: (v) => ctl.update(p.copyWith(gate: v)),
           ),

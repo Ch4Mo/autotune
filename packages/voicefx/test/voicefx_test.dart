@@ -52,7 +52,7 @@ void main() {
   final skip = (lib == null || lib.isEmpty) ? 'set VOICEFX_LIB to a desktop build of libvoicefx' : null;
 
   test('params struct matches the C layout', () {
-    expect(sizeOf<VfxParamsStruct>(), 25 * 4);
+    expect(sizeOf<VfxParamsStruct>(), 26 * 4);
   });
 
   test('presets round-trip through the native engine', () {
@@ -72,6 +72,11 @@ void main() {
     final s = await VoiceFxSession.open(wav.path);
     expect(s.duration, closeTo(2.0, 0.01));
     expect(s.sampleRate, 48000);
+
+    // A clean synthetic tone: no hum, high signal-to-noise ratio.
+    expect(s.noise.humHz, 0);
+    expect(s.noise.isNoisy, isFalse, reason: "snr ${s.noise.snrDb}");
+    await s.render(VoiceFxParams.preset(VoicePreset.studio).copyWith(denoise: 0.6));
 
     final d = await s.render(VoiceFxParams.preset(VoicePreset.pop));
     expect(d, greaterThan(2.0));

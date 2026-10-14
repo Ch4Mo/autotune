@@ -9,6 +9,7 @@
 
 #include "engine/api_internal.hpp"
 #include "engine/audio_io.hpp"
+#include "engine/denoise.hpp"
 #include "engine/dsp.hpp"
 #include "engine/effects.hpp"
 #include "engine/pitch_tracker.hpp"
@@ -394,6 +395,80 @@ void testBacking(const std::string& tmpDir) {
   vfx_session_close(s);
 }
 
+void testDenoise() {
+  std::printf("denoise\n");
+  const double sr = 48000;
+  // Phrases with pauses, like a real take.
+  auto clean = vfxtest::synthVoice(sr, 6.0, [](double t) {
+    const double ph = std::fmod(t, 1.5);
+    return ph < 1.1 ? 200.0 + 30.0 * std::sin(t * 2.0) : 0.0;
+  }, 0.0);
+  // Old-phone noise: hiss (-45 dBFS) + 50 Hz mains buzz with harmonics.
+  std::vector<float> noise(clean.size());
+  std::mt19937 rng(11);
+  std::normal_distribution<float> g(0.0f, 1.0f);
+  for (size_t i = 0; i < noise.size(); ++i) {
+    const double t = i / sr;
+    double hum = 0;
+    for (int h = 1; h <= 5; ++h) hum += std::sin(2 * vfx::kPi * 50.0 * h * t) / h;
+    noise[i] = 0.0056f * g(rng) + static_cast<float>(0.004 * hum);
+  }
+  std::vector<float> noisy(clean.size());
+  for (size_t i = 0; i < noisy.size(); ++i) noisy[i] = clean[i] + noise[i];
+
+  auto info = vfx::analyseNoise(noisy, sr);
+  CHECK(info.humHz == 50.0f, "hum detected %.0f", info.humHz);
+  CHECK(vfx::analyseNoise(clean, sr).humHz == 0.0f, "no hum in clean take");
+
+  auto unchanged = noisy;
+  vfx::denoise(unchanged, sr, 0.0f);
+  CHECK(unchanged == noisy, "strength 0 must not touch the audio");
+
+  auto out = noisy;
+  const auto t0 = std::chrono::steady_clock::now();
+  vfx::denoise(out, sr, 0.8f);
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+
+  // Residual noise in the pauses (1.2..1.45 s of each 1.5 s cycle).
+  auto pauseDb = [&](const std::vector<float>& v) {
+    double e = 0; size_t c = 0;
+    for (size_t i = 0; i < v.size(); ++i) {
+      const double ph = std::fmod(i / sr, 1.5);
+      if (ph > 1.2 && ph < 1.45) { e += v[i] * v[i]; ++c; }
+    }
+    return 10 * std::log10(e / c + 1e-20);
+  };
+  // Error against the clean voice while singing (how much noise is left + damage).
+  auto voiceErrDb = [&](const std::vector<float>& v) {
+    double e = 0, s = 0;
+    for (size_t i = 0; i < v.size(); ++i) {
+      const double ph = std::fmod(i / sr, 1.5);
+      if (ph > 0.1 && ph < 1.0) { e += (v[i] - clean[i]) * (v[i] - clean[i]); s += clean[i] * clean[i]; }
+    }
+    return 10 * std::log10(s / e);
+  };
+  const double before = pauseDb(noisy), after = pauseDb(out);
+  std::printf("  pauses %.1f -> %.1f dBFS, voice SNR %.1f -> %.1f dB, %.0f ms for 6 s\n", before, after,
+              voiceErrDb(noisy), voiceErrDb(out), ms);
+  CHECK(before - after > 15.0, "noise in pauses reduced by %.1f dB", before - after);
+  CHECK(voiceErrDb(out) > voiceErrDb(noisy) + 3.0, "voice SNR improved");
+  double ev = 0, eo = 0;
+  for (size_t i = 0; i < out.size(); ++i) { ev += clean[i] * clean[i]; eo += out[i] * out[i]; }
+  CHECK(std::fabs(10 * std::log10(eo / ev)) < 1.5, "voice level kept (%.2f dB)", 10 * std::log10(eo / ev));
+
+  // Through the API: noise info + render with cleaning.
+  vfx::Session s;
+  s.sampleRate = sr;
+  s.input = noisy;
+  s.analyze();
+  const float snr = s.voiceLevelDb - s.noise.noiseFloorDb;
+  CHECK(snr < 40.0f && s.noise.humHz == 50.0f, "noisy take diagnosed (snr %.1f)", snr);
+  auto p = vfx::presetParams(VFX_PRESET_STUDIO);
+  p.denoise = 0.7f;
+  s.render(p);
+  CHECK(s.output.size() > 0, "render with denoise");
+}
+
 void testPerformance() {
   std::printf("performance\n");
   auto x = vfxtest::synthVoice(kSr, 60.0, [](double t) { return 180.0 + 60.0 * std::sin(t); });
@@ -425,6 +500,7 @@ int main(int argc, char** argv) {
   testIoAndPresets(tmp);
   testResample();
   testBacking(tmp);
+  testDenoise();
   testPerformance();
   std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

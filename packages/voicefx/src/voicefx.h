@@ -57,6 +57,7 @@ typedef struct vfx_params {
   int32_t use_backing;  /* 1 = mix the instrumental (if one is loaded) into the render */
   float vocal_balance;  /* -1 (music louder) .. 1 (voice louder), 0 = balanced */
   float backing_offset_ms; /* > 0 delays the voice against the instrumental */
+  float denoise;        /* 0 = off, 0..1 background-noise cleaning (hiss, hum, buzz) */
 } vfx_params;
 
 enum {
@@ -85,6 +86,11 @@ VFX_API double vfx_session_duration(const vfx_session* s);
 VFX_API int32_t vfx_session_analyze(vfx_session* s);
 /* Detected key (after analyze). confidence 0..1. scale is 0 when unknown. */
 VFX_API int32_t vfx_session_detected_key(const vfx_session* s, int32_t* root, int32_t* scale, float* confidence);
+
+/* Background noise of the take (after analyze): signal-to-noise ratio of the
+ * voice against the pauses, in dB, and mains hum (50 / 60 Hz, 0 = none).
+ * A low SNR (< ~35 dB) or a hum means cleaning (vfx_params.denoise) will help. */
+VFX_API int32_t vfx_session_noise_info(const vfx_session* s, float* snr_db, float* hum_hz);
 
 /* Loads an instrumental (MP3 or WAV) to sing over. It is resampled to the
  * take's rate, its key is detected and used for pitch correction. */

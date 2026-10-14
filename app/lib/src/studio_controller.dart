@@ -65,6 +65,8 @@ class StudioController extends ChangeNotifier {
     return b != null && b.key.scale != MusicalScale.chromatic && b.confidence >= 0.2;
   }
 
+  NoiseInfo? get noise => _session?.noise;
+
   KeyDetection? get detectedKey => keyFromBacking ? _session!.backingKey : _session?.detectedKey;
 
   /// Key actually used for correction (manual choice or detection).
@@ -94,7 +96,11 @@ class StudioController extends ChangeNotifier {
         await _session!.setBacking(backing.path);
       }
       preset = take.preset;
-      params = take.params ?? VoiceFxParams.preset(preset).copyWith(backingOffsetMs: take.recordedOffsetMs);
+      // New take: reuse the user's cleaning choice, or switch it on by
+      // default when the take is clearly noisy.
+      final denoise = repo.preferredDenoise ?? (_session!.noise.isNoisy ? 0.5 : 0.0);
+      params = take.params ??
+          VoiceFxParams.preset(preset).copyWith(backingOffsetMs: take.recordedOffsetMs, denoise: denoise);
       originalWaveform = await _session!.waveform(400, rendered: false);
 
       player.playerStateStream.listen((s) {
@@ -124,6 +130,7 @@ class StudioController extends ChangeNotifier {
       useBacking: params.useBacking,
       vocalBalance: params.vocalBalance,
       backingOffsetMs: params.backingOffsetMs,
+      denoise: params.denoise,
     );
     _notify();
     _schedule(immediate: true);
@@ -169,6 +176,11 @@ class StudioController extends ChangeNotifier {
     _originalPath = null;
     _notify();
     _schedule(immediate: true);
+  }
+
+  void setDenoise(double v) {
+    update(params.copyWith(denoise: v));
+    unawaited(repo.setPreferredDenoise(v));
   }
 
   void setKey({required int root, required int scale}) => update(params.copyWith(keyRoot: root, scale: scale));

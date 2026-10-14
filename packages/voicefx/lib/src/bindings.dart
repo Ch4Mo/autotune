@@ -55,6 +55,8 @@ final class VfxParamsStruct extends Struct {
   external double vocalBalance;
   @Float()
   external double backingOffsetMs;
+  @Float()
+  external double denoise;
 }
 
 final class VfxSessionOpaque extends Opaque {}
@@ -76,6 +78,8 @@ class VoiceFxBindings {
         detectedKey = lib.lookupFunction<
             Int32 Function(SessionPtr, Pointer<Int32>, Pointer<Int32>, Pointer<Float>),
             int Function(SessionPtr, Pointer<Int32>, Pointer<Int32>, Pointer<Float>)>('vfx_session_detected_key'),
+        noiseInfo = lib.lookupFunction<Int32 Function(SessionPtr, Pointer<Float>, Pointer<Float>),
+            int Function(SessionPtr, Pointer<Float>, Pointer<Float>)>('vfx_session_noise_info'),
         setBacking = lib.lookupFunction<Int32 Function(SessionPtr, Pointer<Utf8>), int Function(SessionPtr, Pointer<Utf8>)>(
             'vfx_session_set_backing'),
         clearBacking =
@@ -108,6 +112,7 @@ class VoiceFxBindings {
   final double Function(SessionPtr) duration;
   final int Function(SessionPtr) analyze;
   final int Function(SessionPtr, Pointer<Int32>, Pointer<Int32>, Pointer<Float>) detectedKey;
+  final int Function(SessionPtr, Pointer<Float>, Pointer<Float>) noiseInfo;
   final int Function(SessionPtr, Pointer<Utf8>) setBacking;
   final void Function(SessionPtr) clearBacking;
   final double Function(SessionPtr) backingDuration;

@@ -19,12 +19,15 @@ Le moteur audio, lui, est fait pour un rendu de qualité professionnelle.
    La **tonalité** est détectée toute seule ; on peut aussi la choisir à la main.
    « Plus de réglages » donne accès à la hauteur, au timbre, aux harmonies, au doublage,
    à l'écho, à la brillance, à la chaleur, à la compression et à la réduction de bruit.
-4. **Instrumentale** : on peut aussi l'ajouter, la changer ou la retirer après coup. La tonalité est
+4. **Nettoyage du son** (interrupteur + intensité) : retire le souffle, les bourdonnements et le
+   ronflement électrique d'un micro de téléphone. L'app signale quand une prise est bruitée, et
+   retient votre choix pour les prises suivantes.
+5. **Instrumentale** : on peut aussi l'ajouter, la changer ou la retirer après coup. La tonalité est
    alors détectée sur la musique (plus fiable que sur la voix seule). Réglages : *Équilibre*
    voix/musique et *Synchro voix* (±500 ms), utile avec des écouteurs Bluetooth qui ont du retard.
-5. **Comparer** avant/après au même volume, et regarder la courbe « Justesse » (notes chantées
+6. **Comparer** avant/après au même volume, et regarder la courbe « Justesse » (notes chantées
    contre notes corrigées).
-6. **Exporter** en MP3 320/192 kbps ou en WAV 24/16 bits, puis partager ou enregistrer le fichier
+7. **Exporter** en MP3 320/192 kbps ou en WAV 24/16 bits, puis partager ou enregistrer le fichier
    avec la feuille de partage du système.
 
 ## Architecture
@@ -56,6 +59,7 @@ Les calculs tournent dans un isolate en arrière-plan pour que l'interface reste
 | Correction | Choix de la note avec hystérésis (pas de « tremblement » sur le vibrato), vitesse de correction réglable, *humanize* sur les notes tenues |
 | Changement de hauteur | **TD-PSOLA** synchrone à la période : les formants sont préservés, la voix garde son timbre. Le timbre peut aussi être déplacé indépendamment de la hauteur |
 | Harmonies | Voix générées dans la tonalité (tierce, accord, octave, chœur à 3 voix) |
+| Nettoyage | Réduction de bruit spectrale (STFT, filtre de Wiener à SNR a priori « decision-directed »), profil de bruit appris dans les pauses (jamais à moins de 20 dB de la voix), détection du ronflement 50/60 Hz |
 | Chaîne vocale | Coupe-bas 24 dB/oct, gate doux, de-esser à bande partagée, EQ (chaleur / présence / air), compresseur à genou doux |
 | Espace | Écho ping-pong stéréo, réverbération FDN 8 lignes avec diffusion |
 | Mastering | Normalisation à **-14 LUFS** (ITU-R BS.1770-4), limiteur à anticipation à -1 dBFS |

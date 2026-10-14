@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "../voicefx.h"
+#include "denoise.hpp"
 #include "effects.hpp"
 #include "psola.hpp"
 #include "tuning.hpp"
@@ -19,6 +20,8 @@ struct Session {
   PitchTrack track;
   PitchMarks marks;
   KeyEstimate key;
+  DenoiseReport noise;   // background noise of the raw take
+  float voiceLevelDb = -120.0f;
 
   bool rendered = false;
   Stereo output;
@@ -39,6 +42,11 @@ struct Session {
   Stereo loudnessMatchedOriginal() const;
 
  private:
+  // Denoised copy of the input, cached per strength (slow to compute).
+  std::vector<float> denoised_;
+  float denoisedStrength_ = -1.0f;
+  const std::vector<float>& cleanInput(float strength);
+
   bool mixesBacking(const vfx_params& p) const { return hasBacking && p.use_backing != 0; }
   // Places the voice on the instrumental's timeline with a balanced level.
   // Returns the mix and the loudness it should be mastered to.

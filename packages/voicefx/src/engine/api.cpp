@@ -80,6 +80,14 @@ int32_t vfx_session_detected_key(const vfx_session* s, int32_t* root, int32_t* s
   return 0;
 }
 
+int32_t vfx_session_noise_info(const vfx_session* s, float* snr_db, float* hum_hz) {
+  if (!s) return fail("null session");
+  if (!s->impl.analyzed) return fail("not analysed yet");
+  if (snr_db) *snr_db = std::max(0.0f, s->impl.voiceLevelDb - s->impl.noise.noiseFloorDb);
+  if (hum_hz) *hum_hz = s->impl.noise.humHz;
+  return 0;
+}
+
 int32_t vfx_session_set_backing(vfx_session* s, const char* path) {
   if (!s || !path) return fail("null argument");
   return guarded([&] { s->impl.setBacking(path); });

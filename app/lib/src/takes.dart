@@ -117,12 +117,35 @@ class TakeRepository extends ChangeNotifier {
     final root = Directory('${docs.path}/takes');
     await root.create(recursive: true);
     final repo = TakeRepository._(root);
+    try {
+      if (await repo._settingsFile.exists()) {
+        repo._settings = (jsonDecode(await repo._settingsFile.readAsString()) as Map).cast<String, dynamic>();
+      }
+    } catch (e) {
+      debugPrint('Ignoring unreadable settings: $e');
+    }
     await repo.refresh();
     return _instance = repo;
   }
 
   final Directory _root;
   List<Take> _takes = [];
+
+  File get _settingsFile => File('${_root.path}/settings.json');
+  Map<String, dynamic> _settings = {};
+
+  /// Last noise-cleaning strength chosen by the user (null = never chosen).
+  /// Reused for new takes: the same phone keeps the same microphone noise.
+  double? get preferredDenoise => (_settings['denoise'] as num?)?.toDouble();
+
+  Future<void> setPreferredDenoise(double v) async {
+    _settings['denoise'] = v;
+    try {
+      await _settingsFile.writeAsString(jsonEncode(_settings), flush: true);
+    } catch (e) {
+      debugPrint('Could not save settings: $e');
+    }
+  }
 
   List<Take> get takes => List.unmodifiable(_takes);
 

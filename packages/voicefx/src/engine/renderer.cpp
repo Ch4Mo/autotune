@@ -42,6 +42,7 @@ vfx_params baseParams() {
   p.use_backing = 1;
   p.vocal_balance = 0.0f;
   p.backing_offset_ms = 0.0f;
+  p.denoise = 0.0f;
   return p;
 }
 
@@ -91,40 +92,40 @@ void master(Stereo& s, double sr, bool normalize, float extraGainDb, double targ
 vfx_params presetParams(int preset) {
   vfx_params p = baseParams();
   switch (preset) {
-    case VFX_PRESET_NATURAL:  // transparent correction, keeps the singer's expression
-      p.correction = 0.85f; p.retune_ms = 70.0f; p.humanize = 0.7f;
-      p.reverb = 0.14f; p.reverb_size = 0.4f; p.compression = 0.45f; p.brightness = 0.2f;
+    case VFX_PRESET_NATURAL:  // in tune, but keeps the singer's expression
+      p.correction = 1.0f; p.retune_ms = 45.0f; p.humanize = 0.5f;
+      p.reverb = 0.25f; p.reverb_size = 0.45f; p.compression = 0.55f; p.brightness = 0.3f;
       break;
-    case VFX_PRESET_POP:  // tight modern pop vocal
-      p.correction = 1.0f; p.retune_ms = 18.0f; p.humanize = 0.35f;
-      p.doubler = 0.22f; p.reverb = 0.2f; p.reverb_size = 0.55f;
-      p.delay = 0.1f; p.delay_ms = 330.0f; p.brightness = 0.55f; p.compression = 0.65f;
+    case VFX_PRESET_POP:  // tight, bright modern pop vocal
+      p.correction = 1.0f; p.retune_ms = 10.0f; p.humanize = 0.2f;
+      p.doubler = 0.35f; p.reverb = 0.35f; p.reverb_size = 0.6f;
+      p.delay = 0.25f; p.delay_ms = 330.0f; p.brightness = 0.6f; p.compression = 0.7f;
       break;
     case VFX_PRESET_HARDTUNE:  // the famous robotic, stepped "auto-tune" effect
-      p.correction = 1.0f; p.retune_ms = 0.0f; p.humanize = 0.0f;
-      p.reverb = 0.16f; p.reverb_size = 0.5f; p.delay = 0.12f; p.delay_ms = 300.0f;
-      p.brightness = 0.45f; p.compression = 0.65f;
+      p.correction = 1.0f; p.retune_ms = 0.0f; p.humanize = 0.0f; p.doubler = 0.15f;
+      p.reverb = 0.3f; p.reverb_size = 0.55f; p.delay = 0.3f; p.delay_ms = 300.0f;
+      p.brightness = 0.5f; p.compression = 0.7f;
       break;
     case VFX_PRESET_CHOIR:  // tuned lead + automatic in-key harmonies
-      p.correction = 1.0f; p.retune_ms = 15.0f; p.humanize = 0.3f;
-      p.harmony = 0.6f; p.harmony_mode = 3; p.doubler = 0.25f;
-      p.reverb = 0.3f; p.reverb_size = 0.8f; p.brightness = 0.35f; p.compression = 0.55f;
+      p.correction = 1.0f; p.retune_ms = 12.0f; p.humanize = 0.25f;
+      p.harmony = 0.8f; p.harmony_mode = 3; p.doubler = 0.35f;
+      p.reverb = 0.45f; p.reverb_size = 0.8f; p.brightness = 0.4f; p.compression = 0.6f;
       break;
     case VFX_PRESET_ROBOT:  // monotone vocoder-like robot
-      p.correction = 1.0f; p.retune_ms = 0.0f; p.humanize = 0.0f; p.robot = 1; p.formant = -1.0f;
-      p.delay = 0.15f; p.delay_ms = 250.0f; p.reverb = 0.12f; p.compression = 0.7f; p.brightness = 0.2f;
+      p.correction = 1.0f; p.retune_ms = 0.0f; p.humanize = 0.0f; p.robot = 1; p.formant = -2.0f;
+      p.doubler = 0.2f; p.delay = 0.3f; p.delay_ms = 250.0f; p.reverb = 0.2f; p.compression = 0.75f; p.brightness = 0.3f;
       break;
     case VFX_PRESET_DEEP:  // lower, bigger voice
-      p.correction = 0.7f; p.retune_ms = 40.0f; p.transpose = -5.0f; p.formant = -3.0f;
-      p.reverb = 0.15f; p.warmth = 0.4f; p.brightness = 0.0f;
+      p.correction = 0.8f; p.retune_ms = 30.0f; p.transpose = -5.0f; p.formant = -3.5f;
+      p.reverb = 0.2f; p.warmth = 0.5f; p.brightness = 0.0f; p.compression = 0.6f;
       break;
     case VFX_PRESET_HIGH:  // higher, lighter voice
-      p.correction = 0.7f; p.retune_ms = 40.0f; p.transpose = 6.0f; p.formant = 3.0f;
-      p.reverb = 0.12f; p.warmth = -0.3f; p.brightness = 0.3f;
+      p.correction = 0.8f; p.retune_ms = 30.0f; p.transpose = 5.0f; p.formant = 3.5f;
+      p.reverb = 0.2f; p.warmth = -0.3f; p.brightness = 0.35f; p.compression = 0.6f;
       break;
     case VFX_PRESET_STUDIO:  // no pitch correction, just a polished vocal chain
       p.correction = 0.0f; p.humanize = 0.0f;
-      p.reverb = 0.16f; p.reverb_size = 0.45f; p.brightness = 0.4f; p.compression = 0.55f;
+      p.reverb = 0.25f; p.reverb_size = 0.45f; p.brightness = 0.45f; p.compression = 0.65f;
       break;
     default:
       break;
@@ -187,7 +188,25 @@ void Session::analyze() {
   track = trackPitch(input, sampleRate);
   marks = computePitchMarks(input, track);
   key = detectKey(track);
+  std::vector<float> voicedDb;
+  for (size_t i = 0; i < track.frames(); ++i)
+    if (track.f0[i] > 0.0f) voicedDb.push_back(track.rmsDb[i]);
+  voiceLevelDb = voicedDb.size() > 20 ? percentile(voicedDb, 0.7) : percentile(track.rmsDb, 0.9);
+  noise = analyseNoise(input, sampleRate, voiceLevelDb);
   analyzed = true;
+}
+
+const std::vector<float>& Session::cleanInput(float strength) {
+  strength = std::clamp(strength, 0.0f, 1.0f);
+  if (strength <= 0.0f) return input;
+  // Quantise so tiny slider moves reuse the cached result.
+  strength = std::round(strength * 20.0f) / 20.0f;
+  if (strength != denoisedStrength_) {
+    denoised_ = input;
+    denoise(denoised_, sampleRate, strength, voiceLevelDb);
+    denoisedStrength_ = strength;
+  }
+  return denoised_;
 }
 
 void Session::render(const vfx_params& p) {
@@ -196,7 +215,7 @@ void Session::render(const vfx_params& p) {
   const size_t n = input.size();
 
   // --- 1. Clean-up: rumble filter, auto level, soft noise gate -------------
-  std::vector<float> pre = input;
+  std::vector<float> pre = cleanInput(p.denoise);
   {
     Biquad h1, h2;
     h1.setup(Biquad::Type::HighPass, sr, 70.0, 0.5411961);
@@ -284,7 +303,8 @@ void Session::render(const vfx_params& p) {
   }
 
   if (p.doubler > 0.0f) {
-    const float level = std::clamp(p.doubler, 0.0f, 1.0f) * 0.5f;
+    // Perceptual curve: about -11 dB under the lead at 0.25, -3 dB at 1.
+    const float level = 0.5f * dbToGain(-17.0f + 17.0f * std::sqrt(std::clamp(p.doubler, 0.0f, 1.0f)));
     const float cents[2] = {-9.0f, 8.0f};
     const float pans[2] = {-0.85f, 0.85f};
     const size_t delays[2] = {17, 29};
@@ -307,8 +327,12 @@ void Session::render(const vfx_params& p) {
   // --- 5. Space: echo + reverb sends (streaming, in place) ---------------------
   if (p.delay > 0.0f || p.reverb > 0.0f) {
     const float size = std::clamp(p.reverb_size, 0.0f, 1.0f);
-    const float echoGain = 0.55f * std::clamp(p.delay, 0.0f, 1.0f);
-    const float verbGain = 1.1f * std::clamp(p.reverb, 0.0f, 1.0f);
+    // Send levels follow a perceptual curve: clearly audible from the middle
+    // of the slider. Measured on a dry vocal, the wet signal sits at about
+    // -15 / -7 / 0 dB (reverb) and -19 / -10 / -4 dB (echo) for 0.15 / 0.5 / 1.
+    const float rv = std::clamp(p.reverb, 0.0f, 1.0f), dl = std::clamp(p.delay, 0.0f, 1.0f);
+    const float echoGain = dl > 0.0f ? 0.55f * dbToGain(-19.2f + 22.0f * std::sqrt(dl)) : 0.0f;
+    const float verbGain = rv > 0.0f ? 1.1f * dbToGain(-21.4f + 24.0f * std::sqrt(rv)) : 0.0f;
     PingPongDelay echo(sr, std::clamp(p.delay_ms, 40.0f, 1200.0f), 0.25f + 0.35f * p.delay, 5000.0f);
     FdnReverb verb(sr, size, reverbDecay, 0.45f, 15.0f + 25.0f * size);
     for (size_t i = 0; i < dry.size(); ++i) {

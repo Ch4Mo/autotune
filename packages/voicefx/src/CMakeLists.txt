@@ -19,6 +19,7 @@ endif()
 set(VOICEFX_SOURCES
   engine/api.cpp
   engine/audio_io.cpp
+  engine/denoise.cpp
   engine/effects.cpp
   engine/fft.cpp
   engine/pitch_tracker.cpp

@@ -93,6 +93,7 @@ class VoiceFxParams {
     this.useBacking = true,
     this.vocalBalance = 0,
     this.backingOffsetMs = 0,
+    this.denoise = 0,
   });
 
   /// -1 = use the detected key.
@@ -129,6 +130,9 @@ class VoiceFxParams {
 
   /// Positive values delay the voice against the instrumental.
   final double backingOffsetMs;
+
+  /// 0 = off, 0..1 background-noise cleaning (hiss, hum, buzz).
+  final double denoise;
 
   /// Settings of a built-in preset (read from the native engine).
   static VoiceFxParams preset(VoicePreset preset) {
@@ -168,6 +172,7 @@ class VoiceFxParams {
         useBacking: s.useBacking != 0,
         vocalBalance: s.vocalBalance,
         backingOffsetMs: s.backingOffsetMs,
+        denoise: s.denoise,
       );
 
   void _writeTo(VfxParamsStruct s) {
@@ -196,7 +201,8 @@ class VoiceFxParams {
       ..outputGainDb = outputGainDb
       ..useBacking = useBacking ? 1 : 0
       ..vocalBalance = vocalBalance
-      ..backingOffsetMs = backingOffsetMs;
+      ..backingOffsetMs = backingOffsetMs
+      ..denoise = denoise;
   }
 
   VoiceFxParams copyWith({
@@ -225,6 +231,7 @@ class VoiceFxParams {
     bool? useBacking,
     double? vocalBalance,
     double? backingOffsetMs,
+    double? denoise,
   }) =>
       VoiceFxParams(
         keyRoot: keyRoot ?? this.keyRoot,
@@ -252,6 +259,7 @@ class VoiceFxParams {
         useBacking: useBacking ?? this.useBacking,
         vocalBalance: vocalBalance ?? this.vocalBalance,
         backingOffsetMs: backingOffsetMs ?? this.backingOffsetMs,
+        denoise: denoise ?? this.denoise,
       );
 
   Map<String, Object> toJson() => {
@@ -280,6 +288,7 @@ class VoiceFxParams {
         'useBacking': useBacking,
         'vocalBalance': vocalBalance,
         'backingOffsetMs': backingOffsetMs,
+        'denoise': denoise,
       };
 
   factory VoiceFxParams.fromJson(Map<String, dynamic> j) {
@@ -312,6 +321,7 @@ class VoiceFxParams {
       useBacking: j['useBacking'] as bool? ?? d.useBacking,
       vocalBalance: f('vocalBalance', d.vocalBalance),
       backingOffsetMs: f('backingOffsetMs', d.backingOffsetMs),
+      denoise: f('denoise', d.denoise),
     );
   }
 
@@ -338,6 +348,20 @@ class VoiceFxException implements Exception {
   String toString() => 'VoiceFxException: $message';
 }
 
+/// Background noise of a take, measured during analysis.
+class NoiseInfo {
+  const NoiseInfo(this.snrDb, this.humHz);
+
+  /// Voice level above the background noise, in dB.
+  final double snrDb;
+
+  /// 50 / 60 when mains hum was found, else 0.
+  final double humHz;
+
+  /// True when cleaning will make an audible difference.
+  bool get isNoisy => snrDb < 35 || humHz > 0;
+}
+
 class PitchCurves {
   const PitchCurves(this.detected, this.corrected);
 
@@ -348,7 +372,7 @@ class PitchCurves {
 
 /// One recording loaded in the engine. Call [dispose] when done.
 class VoiceFxSession {
-  VoiceFxSession._(this._address, this.duration, this.sampleRate, this.detectedKey);
+  VoiceFxSession._(this._address, this.duration, this.sampleRate, this.detectedKey, this.noise);
 
   final int _address;
 
@@ -356,6 +380,7 @@ class VoiceFxSession {
   final double duration;
   final double sampleRate;
   final KeyDetection detectedKey;
+  final NoiseInfo noise;
 
   bool _disposed = false;
   Future<void> _queue = Future.value();
@@ -380,20 +405,23 @@ class VoiceFxSession {
           throw VoiceFxException(msg);
         }
         final root = calloc<Int32>(), scale = calloc<Int32>();
-        final conf = calloc<Float>();
+        final conf = calloc<Float>(), snr = calloc<Float>(), hum = calloc<Float>();
         b.detectedKey(s, root, scale, conf);
-        final out = (s.address, b.duration(s), b.sampleRate(s), root.value, scale.value, conf.value);
+        b.noiseInfo(s, snr, hum);
+        final out = (s.address, b.duration(s), b.sampleRate(s), root.value, scale.value, conf.value, snr.value, hum.value);
         calloc
           ..free(root)
           ..free(scale)
-          ..free(conf);
+          ..free(conf)
+          ..free(snr)
+          ..free(hum);
         return out;
       } finally {
         calloc.free(path);
       }
     });
     final key = MusicalKey(r.$4, MusicalScale.values[r.$5.clamp(0, MusicalScale.values.length - 1)]);
-    return VoiceFxSession._(r.$1, r.$2, r.$3, KeyDetection(key, r.$6));
+    return VoiceFxSession._(r.$1, r.$2, r.$3, KeyDetection(key, r.$6), NoiseInfo(r.$7, r.$8));
   }
 
   /// Serialises work on this session (the native side is not re-entrant).
